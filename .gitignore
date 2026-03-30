@@ -1,0 +1,60 @@
+# Build & Output
+build/
+debug-build/
+cmake-build-*/
+out/
+bin/
+lib/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+Makefile
+
+# Executables & Binaries
+*.exe
+*.out
+*.dll
+*.app
+*.so
+*.dylib
+
+# Debug symbols
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Object Files
+*.o
+*.obj
+*.lo
+*.slo
+
+# Logs & Temp
+*.log
+*.tmp
+*.temp
+
+# IDE
+.idea/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Data (Runtime Generated)
+data/cache/
+data/metadata/
+
+# Optional: Ignore build asset copies
+build/assets/
+
+# Keep important files
+!CMakeLists.txt
+!README.md
+!docs/
+
+nul
