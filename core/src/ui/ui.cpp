@@ -48,7 +48,7 @@ namespace safe::ui {
                      ImGuiWindowFlags_NoMove
                      );
 
-        const float availableHeight = ImGui::GetContentRegionAvail().y;
+        const float availableHeight = ImGui::GetContentRegionAvail().y - 8;
 
         constexpr float topBarHeight = 30.0f;
         constexpr float statusBarHeight = 30.0f;
@@ -56,11 +56,9 @@ namespace safe::ui {
         const float middleHeight = availableHeight - topBarHeight - statusBarHeight;
 
         // Top Bar
-        ImGui::BeginChild("Topbar", ImVec2(0, topBarHeight), true);
+        ImGui::BeginChild("TopBar", ImVec2(0, topBarHeight), true);
         RenderTopBar();
         ImGui::EndChild();
-
-        ImGui::Separator();
 
         // Middle Area
         ImGui::BeginChild("Middle", ImVec2(0, middleHeight), true);
@@ -82,7 +80,6 @@ namespace safe::ui {
         ImGui::EndChild();
 
         ImGui::EndChild();
-        ImGui::Separator();
 
         // Status Bar
         ImGui::BeginChild("StatusBar", ImVec2(0, statusBarHeight), true);
@@ -95,6 +92,8 @@ namespace safe::ui {
 
     static void RenderTopBar()
     {
+        ImGui::Text("Safe - Secure Folder Manager");
+        // Add your action buttons here
 
     }
 
