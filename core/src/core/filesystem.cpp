@@ -1,4 +1,4 @@
-#include "core/include/core/filesystem.hpp"
+#include "core/filesystem.hpp"
 #include <windows.h>
 #include <fstream>
 #include <shlobj.h>
@@ -14,8 +14,7 @@
 #undef RemoveDirectory
 #endif
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 bool Filesystem::FileExists(const std::wstring& path) {
     DWORD attrs = GetFileAttributesW(path.c_str());
@@ -165,5 +164,4 @@ std::wstring Filesystem::GetParentPath(const std::wstring& path) {
     return path.substr(0, pos);
 }
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core

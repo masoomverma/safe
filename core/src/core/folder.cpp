@@ -1,8 +1,7 @@
-#include "core/include/core/folder.hpp"
-#include "core/include/core/filesystem.hpp"
+#include "core/folder.hpp"
+#include "core/filesystem.hpp"
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 Folder::Folder()
     : m_id(-1)
@@ -69,5 +68,4 @@ bool Folder::IsValid() const {
     return !m_path.empty() && Filesystem::DirectoryExists(m_path);
 }
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core

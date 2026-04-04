@@ -3,8 +3,7 @@
 #include <cstdint>
 #include <string>
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 // Common types used throughout the application
 using u8 = uint8_t;
@@ -31,5 +30,4 @@ struct Version {
 
 constexpr Version APP_VERSION = { 1, 0, 0 };
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core

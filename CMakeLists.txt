@@ -25,6 +25,7 @@ set(PROJECT_SOURCES
     core/src/core/cli.cpp
     core/src/core/filesystem.cpp
     core/src/core/folder.cpp
+    core/src/core/renderer.cpp
     core/src/core/renderer_impl.cpp
     core/src/core/types.cpp
     core/src/ui/ui.cpp
@@ -50,11 +51,10 @@ set_source_files_properties(${SQLITE_SOURCES} PROPERTIES LANGUAGE C)
 # CMAKE_SOURCE_DIR (workspace root) is added so that
 # #include "core/..." and #include "ui/..." style paths resolve correctly.
 target_include_directories(Safe PRIVATE
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/libs/imgui
-    ${CMAKE_SOURCE_DIR}/libs/imgui/backends
-    ${CMAKE_SOURCE_DIR}/libs/sqlite3
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/libs/imgui
+    ${CMAKE_SOURCE_DIR}/core/libs/imgui/backends
+    ${CMAKE_SOURCE_DIR}/core/libs/sqlite3
 )
 
 # ── Windows / DirectX 11 libraries ───────────────────────────────────────────

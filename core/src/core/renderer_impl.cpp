@@ -1,9 +1,8 @@
-#include "core/include/core/renderer.hpp"
+#include "core/renderer.hpp"
 #include <d3d11.h>
 #include <dxgi.h>
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 bool Renderer::Initialize(HWND hwnd) {
     DXGI_SWAP_CHAIN_DESC sd = {};
@@ -86,5 +85,4 @@ void Renderer::EndFrame() {
     m_swapChain->Present(1, 0);
 }
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core

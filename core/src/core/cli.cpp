@@ -1,9 +1,8 @@
-#include "core/include/core/cli.hpp"
-#include "core/include/core/types.hpp"
+#include "core/cli.hpp"
+#include "core/types.hpp"
 #include <iostream>
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 bool CLI::ParseArguments(int argc, char* argv[], std::vector<Command>& commands) {
     (void)argc;     // Unused parameter (stub implementation)
@@ -24,5 +23,4 @@ void CLI::ShowVersion() {
     std::cout << "Safe version " << APP_VERSION.ToString() << "\n";
 }
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core

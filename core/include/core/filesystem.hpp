@@ -4,8 +4,7 @@
 #include <vector>
 #include <cstdint>
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 class Filesystem {
 public:
@@ -37,5 +36,4 @@ public:
     static std::wstring GetParentPath(const std::wstring& path);
 };
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core

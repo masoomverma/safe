@@ -4,8 +4,7 @@
 #include <cstdint>
 #include <ctime>
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 enum class FolderStatus {
     Unlocked,       // Normal folder
@@ -53,5 +52,4 @@ private:
     time_t m_createdAt;
 };
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core

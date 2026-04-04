@@ -3,8 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 class CLI {
 public:
@@ -22,5 +21,4 @@ public:
     static void ShowVersion();
 };
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core

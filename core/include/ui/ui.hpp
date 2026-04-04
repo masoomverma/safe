@@ -1,7 +1,7 @@
-#pragma once
+#ifndef UI_HPP
+#define UI_HPP
 
-namespace safe {
-namespace ui {
+namespace safe::ui {
 
 class UI {
 public:
@@ -18,5 +18,6 @@ private:
     static bool s_initialized;
 };
 
-} // namespace ui
-} // namespace safe
+} // namespace safe::ui
+
+#endif

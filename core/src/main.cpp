@@ -4,9 +4,13 @@
 
 #define IDI_ICON1 101
 
-#include "core/libs/imgui/imgui.h"
-#include "core/libs/imgui/backends/imgui_impl_win32.h"
-#include "core/libs/imgui/backends/imgui_impl_dx11.h"
+// ImGui libs
+#include "imgui.h"
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx11.h"
+
+// safe headers
+#include "ui/ui.hpp"
 
 // DirectX 11 globals
 static ID3D11Device*            g_pd3dDevice        = nullptr;
@@ -237,9 +241,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // ── Your UI goes here ─────────────────────────────────────────────
-        ImGui::ShowDemoWindow();
-        // ─────────────────────────────────────────────────────────────────
+        // Safe UI Logic
+        safe::ui::UI::Render();
+
 
         // Render
         ImGui::Render();

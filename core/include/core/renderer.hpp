@@ -3,8 +3,7 @@
 #include <d3d11.h>
 #include <windows.h>
 
-namespace safe {
-namespace core {
+namespace safe::core {
 
 class Renderer {
 public:
@@ -30,5 +29,4 @@ private:
     ID3D11RenderTargetView* m_renderTargetView = nullptr;
 };
 
-} // namespace core
-} // namespace safe
+} // namespace safe::core
