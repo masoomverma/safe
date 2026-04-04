@@ -1,4 +1,4 @@
-// dear imgui, v1.92.7 WIP
+// dear imgui, v1.92.8 WIP
 // (main code and documentation)
 
 // Help:
@@ -3270,8 +3270,7 @@ ImGuiListClipper::~ImGuiListClipper()
 
 void ImGuiListClipper::Begin(int items_count, float items_height)
 {
-    if (Ctx == NULL)
-        Ctx = ImGui::GetCurrentContext();
+    Ctx = ImGui::GetCurrentContext();
 
     ImGuiContext& g = *Ctx;
     ImGuiWindow* window = g.CurrentWindow;
