@@ -38,3 +38,8 @@
 
 1. Use the **Search...** box in the top bar.
 2. The sidebar list filters items by name while you type.
+
+
+## 6. Safe UI 
+
+![Safe UI](assets/icons/Safe_UI.png)
