@@ -52,10 +52,12 @@ data/metadata/
 # Optional: Ignore build asset copies
 build/assets/
 
+# Docs
+docs/
+
 # Keep important files
 !CMakeLists.txt
 !README.md
-!docs/
 
 # Windows specific
 nul
