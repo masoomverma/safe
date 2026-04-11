@@ -1,134 +1,80 @@
-# Safe - Technical Notes and Current Status
+# Safe - Project Overview
 
-## 1. Current Status
+## 1. Purpose
 
-### Phase
-- **Phase 3 (UI implementation)** is active.
+Safe is a Windows desktop application for locking and unlocking files and folders into `.safe` archives through a graphical interface.
 
-### Working now
-1. Win32 window + DirectX 11 rendering loop
-2. Dear ImGui full-screen app layout (TopBar / Sidebar / MainPanel / StatusBar)
-3. Real folder picker integration (**Open**) and filesystem-backed scan/load (folders + files + `.safe`)
-4. Item list rendering with search filter and real metadata backing
-5. Selection and focus system:
-   - Single click **focuses** an item and shows details (no selection on plain click)
-   - **Select button mode** (toggle multi-select)
-   - **Ctrl+Click** random/non-contiguous toggle selection
-   - **Shift+Click** range selection using anchor index
-   - Lock/Unlock actions work for selected items, or for the single focused item when nothing is selected
-6. Stable item identity with path-derived IDs (selection is ID-based)
-7. SQLite metadata persistence (`%LOCALAPPDATA%\\Safe\\safe.db`) for lock state and password verifier
-8. Last opened root path persistence and auto-restore at app startup
-9. Migration-safe SQLite schema versioning via `PRAGMA user_version` (v1->v5 path)
-10. Real item lock/unlock pipeline (files + folders):
-    - Selected content is serialized and encrypted into `.safe` archives
-    - Unlock decrypts and restores original file/folder content
-    - Archive format uses PBKDF2(SHA-256) + AES-256-CBC
-11. Password-gated lock/unlock flow via modal popup
-12. Updated UI highlight colors:
-    - Selected is medium blue
-    - Hover is lighter than selected
-13. Password popup UX updates:
-    - Slightly increased modal height for better spacing
-    - Multi-select unlock keeps a stable target set for retries (no need to close/reopen popup)
-    - Unlock feedback now distinguishes:
-      - full mismatch: **"Wrong password. Please try again."**
-      - partial match in multi-select: **"Some selected items need a different password."**
-14. Inno Setup script updated to package from release output using lowercase executable name:
-    - Source/output defaults point to `release-build`
-    - Installer app target references `safe.exe`
+## 2. Current Functional Scope
 
-### Not implemented yet
-1. Advanced key-management lifecycle (recovery/rotation/credential reset).
-2. Compression and large-item streaming pipeline for performance.
-3. Automated regression tests around selection, migration, and lock/unlock behavior.
+The core workflow is implemented and operational:
 
----
+1. Open a target folder
+2. Search and browse items
+3. Lock selected item(s)
+4. Unlock selected item(s)
+5. Persist metadata and restore the last opened path
 
-## 2. Technical Architecture
+## 3. Implemented Features
 
-## Entry and platform layer
-- **File:** `core/src/main.cpp`
-- Responsibilities:
-  1. Register Win32 class and create main window
-  2. Initialize D3D11 device/swap chain/render target
-  3. Initialize Dear ImGui context and DX11/Win32 backends
-  4. Apply theme/style values
-  5. Run render loop and message pump
-  6. Shutdown UI and graphics resources cleanly
+1. Full-screen Dear ImGui interface with TopBar, Sidebar, MainPanel, and StatusBar
+2. Selection system with focus, Select mode, Ctrl+Click toggle, and Shift+Click range selection
+3. Lock/Unlock operations on selected items, or on the focused item when no selection exists
+4. Password modal with stable multi-select retry behavior
+5. Unlock feedback rules:
+   - If no item is unlocked in the current attempt: **"Wrong password. Please try again."**
+   - If only part of the selection is unlocked: **"Some selected items need a different password."**
+6. SQLite metadata persistence (`%LOCALAPPDATA%\Safe\safe.db`)
+7. Automatic restoration of the last opened root path at startup
 
-## UI/state layer
-- **File:** `core/src/ui/ui.cpp`
-- Namespace: `safe::ui`
-- Public API:
-  - `UI::Initialize()`
-  - `UI::Render()`
-  - `UI::Cleanup()`
+## 4. Technology Stack
 
-### Main state currently in memory
-1. `items` (`std::vector<Item>`) with fields:
-   - `name`
-   - `isFolder`
-   - `isLocked`
-2. `selectedItemIds` (`std::unordered_set<std::string>`)
-3. `focusedItemId` (`std::string`) for single-click details focus
-4. Selection helpers:
-   - `multiSelectMode`
-   - `selectionAnchorIndex`
-   - `hasSelectionAnchor`
-5. UI state:
-   - `searchBuffer`
-   - `statusMessage`
-   - password popup state (`showPasswordPopup`, `passwordModeIsLock`)
+1. C++20
+2. CMake + Ninja
+3. Win32 API
+4. DirectX 11
+5. Dear ImGui (including Win32 and DX11 backends)
+6. SQLite3
+7. Windows BCrypt
 
-### UI flow functions
-1. `RenderMainLayout()` - top-level window sections
-2. `RenderTopBar()` - search/open/select/lock/unlock controls
-3. `RenderFolderList()` - list + selection behavior
-4. `RenderFolderDetails()` - single vs multi-item details
-5. `RenderPasswordPopup()` - password prompt and validation
-6. `PerformLockOperation()` / `PerformUnlockOperation()` - operation handlers
+## 5. OpenSSL Runtime DLL Requirements (`core\build`)
 
----
+Required runtime files:
 
-## 3. Behavior Notes (Current)
+1. `libcrypto-3-x64.dll`
+2. `libssl-3-x64.dll`
 
-1. Single click focuses an item and shows its details without selecting it.
-2. Selection is performed through Select mode, Ctrl+Click, or Shift+Click.
-3. Lock is enabled only when operation targets are all unlocked.
-4. Unlock is enabled only when operation targets are all locked.
-5. Mixed locked/unlocked targets disable both actions.
-6. Lock/Unlock requires password confirmation and updates SQLite metadata.
-7. Selection uses stable IDs and survives index reordering safely.
-8. In unlock retry flow, already-unlocked items are ignored on later attempts in the same popup session.
-9. Unlock message rule:
-   - if this attempt unlocks none -> show wrong password
-   - if this attempt unlocks some but not all remaining locked targets -> show different-password message
+Recommended setup process:
 
----
+1. Install OpenSSL 3.x (Win64)
+2. Copy the required DLL files into `core\build\`
+3. Configure the project:
+   - `cmake -S . -B release-build -G Ninja -DOPENSSL_DLL_DIR="core\build"`
+4. Build the project:
+   - `cmake --build release-build`
 
-## 4. Technical Risks / Constraints
+## 6. Project Structure
 
-1. Archive packing currently serializes file data in-memory; very large files/folders may need streaming.
-2. Password verifier storage is stronger (salted PBKDF2) but still local metadata-based.
-3. File scan is currently root-level only; deep recursive listing is not yet implemented in UI.
-
----
-
-## 5. Next Steps
-
-1. Add operation-level tests for selection rules and lock/unlock guards.
-2. Optimize encryption pipeline for large files/directories (streaming, chunking, optional compression).
-3. Add operation-level tests for lock/unlock verifier and migration paths.
-4. Build and ship the new per-user Inno Setup installer (`safe.exe`) for user-scope installs only (adds/removes user PATH entry and preserves `.safe` archives on uninstall).
-
----
-
-## 6. AI Assistance
-
-Development included AI-assisted implementation and cleanup support with:
-1. **ChatGPT (GPT-5.3-Codex)**
-2. **GitHub Copilot**
-3. Unlock reliability fixes:
-   - Successful decrypt/restore is treated as success even if archive cleanup fails
-   - Plaintext entries are preferred over stale `.safe` entries when both exist
+```text
+Safe
+├── assets
+│   └── icons
+├── core
+│   ├── build
+│   ├── include
+│   │   ├── core
+│   │   └── ui
+│   ├── libs
+│   │   ├── imgui
+│   │   │   └── backends
+│   │   └── sqlite3
+│   └── src
+│       ├── core
+│       └── ui
+├── installer
+│   └── inno
+├── .gitignore
+├── app.rc
+├── CMakeLists.txt
+├── Note.md
+└── README.md
+```

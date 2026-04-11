@@ -57,6 +57,11 @@
 
 ![Safe UI](assets/icons/Safe_UI.png)
 
+### - Lock/Unlock
+
+![Lock](assets/icons/Lock.png)
+![Lock](assets/icons/Unlock.png)
+
 ## 9. Build user-level installer.exe
 
 1. Install **Inno Setup 6** (for `ISCC.exe`).
