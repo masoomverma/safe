@@ -4,10 +4,10 @@
 
 namespace safe::core
 {
-    bool CLI::ParseArguments(int argc, char* argv[], std::vector<Command>& commands) {
-        (void)argc;     // Unused parameter (stub implementation)
-        (void)argv;     // Unused parameter (stub implementation)
-        (void)commands; // Unused parameter (stub implementation)
+    bool CLI::ParseArguments(int argc, char* argv[], const std::vector<Command>& commands) {
+        (void)argc;     // stub implementation
+        (void)argv;     // stub implementation
+        (void)commands; // stub implementation
         return true;
     }
 

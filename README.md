@@ -46,7 +46,7 @@
 
 ## 7. Persistence
 
-1. Item metadata is stored in `%APPDATA%\Safe\safe.db`.
+1. Item metadata is stored in `%LOCALAPPDATA%\Safe\safe.db`.
 2. Lock state, item kind, and a salted PBKDF2 password verifier survive app restarts.
 3. Encrypted `.safe` archives are detected on reload and shown as locked entries.
 4. SQLite schema upgrades are migration-safe using `PRAGMA user_version`.
@@ -56,3 +56,18 @@
 ## 8. Safe UI 
 
 ![Safe UI](assets/icons/Safe_UI.png)
+
+## 9. Build user-level installer.exe
+
+1. Install **Inno Setup 6** (for `ISCC.exe`).
+2. Configure and build:
+   - `cmake -S . -B debug-build`
+   - `cmake --build debug-build --config Release --target installer`
+3. Output installer:
+   - `debug-build\installer\safe.exe`
+
+This installer is explicitly **per-user only** (`PrivilegesRequired=lowest`) and installs to:
+- `%LOCALAPPDATA%\Programs\Safe`
+- It also appends the install directory to the current user's `PATH`.
+- Uninstall removes the same user `PATH` entry automatically.
+- Uninstall removes installed app content but preserves any `.safe` archived files/folders.

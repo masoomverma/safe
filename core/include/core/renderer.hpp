@@ -18,12 +18,12 @@ namespace safe::core
         void CreateRenderTarget();
         void CleanupRenderTarget();
         void ResizeBuffers(UINT width, UINT height);
-        void BeginFrame(const float clearColor[4]);
-        void EndFrame();
+        void BeginFrame(const float clearColor[4]) const;
+        void EndFrame() const;
 
-        ID3D11Device* GetDevice() const { return m_device; }
-        ID3D11DeviceContext* GetDeviceContext() const { return m_deviceContext; }
-        ID3D11RenderTargetView* GetRenderTargetView() const { return m_renderTargetView; }
+        [[nodiscard]] ID3D11Device* GetDevice() const { return m_device; }
+        [[nodiscard]] ID3D11DeviceContext* GetDeviceContext() const { return m_deviceContext; }
+        [[nodiscard]] ID3D11RenderTargetView* GetRenderTargetView() const { return m_renderTargetView; }
 
     private:
         ID3D11Device* m_device = nullptr;

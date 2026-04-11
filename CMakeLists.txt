@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Safe LANGUAGES C CXX)
+project(Safe VERSION 1.0.0 LANGUAGES C CXX)
 
 # ── Language standard ────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
@@ -26,7 +26,6 @@ set(PROJECT_SOURCES
     core/src/core/filesystem.cpp
     core/src/core/folder.cpp
     core/src/core/renderer.cpp
-    core/src/core/renderer_impl.cpp
     core/src/core/types.cpp
     core/src/ui/ui.cpp
 )
@@ -84,18 +83,34 @@ target_compile_definitions(Safe PRIVATE
     NOMINMAX
 )
 
-# ── Post-build: copy OpenSSL DLLs next to the executable ─────────────────────
-# Uncomment when OpenSSL is integrated into the project
-# set(OPENSSL_DLLS
-#     ${CMAKE_SOURCE_DIR}/build/libcrypto-3-x64.dll
-#     ${CMAKE_SOURCE_DIR}/build/libssl-3-x64.dll
-# )
-#
-# foreach(DLL ${OPENSSL_DLLS})
-#     add_custom_command(TARGET Safe POST_BUILD
-#         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-#             "${DLL}"
-#             "$<TARGET_FILE_DIR:Safe>"
-#         COMMENT "Copying ${DLL} to output directory"
-#     )
-# endforeach()
+find_program(ISCC_EXECUTABLE NAMES ISCC.exe iscc)
+if(ISCC_EXECUTABLE)
+    add_custom_target(installer
+        COMMAND "${ISCC_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/installer/inno/SafeInstaller.iss"
+            "/DAppVersion=${PROJECT_VERSION}"
+            "/DSourceDir=$<TARGET_FILE_DIR:Safe>"
+            "/DOutputDir=${CMAKE_BINARY_DIR}/installer"
+        DEPENDS Safe
+        COMMENT "Building per-user safe.exe installer with Inno Setup"
+        VERBATIM
+    )
+endif()
+
+# ── Post-build: copy OpenSSL DLLs when present ────────────────────────────────
+set(OPENSSL_DLL_DIR "${CMAKE_SOURCE_DIR}/build" CACHE PATH "Directory containing OpenSSL runtime DLLs")
+if(EXISTS "${OPENSSL_DLL_DIR}")
+    file(GLOB OPENSSL_DLLS
+        "${OPENSSL_DLL_DIR}/libcrypto*.dll"
+        "${OPENSSL_DLL_DIR}/libssl*.dll"
+    )
+
+    foreach(DLL ${OPENSSL_DLLS})
+        add_custom_command(TARGET Safe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${DLL}"
+                "$<TARGET_FILE_DIR:Safe>"
+            COMMENT "Copying ${DLL} to output directory"
+        )
+    endforeach()
+endif()

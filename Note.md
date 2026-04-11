@@ -10,13 +10,14 @@
 2. Dear ImGui full-screen app layout (TopBar / Sidebar / MainPanel / StatusBar)
 3. Real folder picker integration (**Open**) and filesystem-backed scan/load (folders + files + `.safe`)
 4. Item list rendering with search filter and real metadata backing
-5. Selection system:
-   - Single click selection
+5. Selection and focus system:
+   - Single click **focuses** an item and shows details (no selection on plain click)
    - **Select button mode** (toggle multi-select)
    - **Ctrl+Click** random/non-contiguous toggle selection
    - **Shift+Click** range selection using anchor index
+   - Lock/Unlock actions work for selected items, or for the single focused item when nothing is selected
 6. Stable item identity with path-derived IDs (selection is ID-based)
-7. SQLite metadata persistence (`%APPDATA%\\Safe\\safe.db`) for lock state and password verifier
+7. SQLite metadata persistence (`%LOCALAPPDATA%\\Safe\\safe.db`) for lock state and password verifier
 8. Last opened root path persistence and auto-restore at app startup
 9. Migration-safe SQLite schema versioning via `PRAGMA user_version` (v1->v5 path)
 10. Real item lock/unlock pipeline (files + folders):
@@ -61,11 +62,12 @@
    - `isFolder`
    - `isLocked`
 2. `selectedItemIds` (`std::unordered_set<std::string>`)
-3. Selection helpers:
+3. `focusedItemId` (`std::string`) for single-click details focus
+4. Selection helpers:
    - `multiSelectMode`
    - `selectionAnchorIndex`
    - `hasSelectionAnchor`
-4. UI state:
+5. UI state:
    - `searchBuffer`
    - `statusMessage`
    - password popup state (`showPasswordPopup`, `passwordModeIsLock`)
@@ -82,11 +84,13 @@
 
 ## 3. Behavior Notes (Current)
 
-1. Lock is enabled only when selection is all unlocked.
-2. Unlock is enabled only when selection is all locked.
-3. Mixed locked/unlocked selection disables both actions.
-4. Lock/Unlock requires password confirmation and updates SQLite metadata.
-5. Selection uses stable IDs and survives index reordering safely.
+1. Single click focuses an item and shows its details without selecting it.
+2. Selection is performed through Select mode, Ctrl+Click, or Shift+Click.
+3. Lock is enabled only when operation targets are all unlocked.
+4. Unlock is enabled only when operation targets are all locked.
+5. Mixed locked/unlocked targets disable both actions.
+6. Lock/Unlock requires password confirmation and updates SQLite metadata.
+7. Selection uses stable IDs and survives index reordering safely.
 
 ---
 
@@ -103,3 +107,15 @@
 1. Add operation-level tests for selection rules and lock/unlock guards.
 2. Optimize encryption pipeline for large files/directories (streaming, chunking, optional compression).
 3. Add operation-level tests for lock/unlock verifier and migration paths.
+4. Build and ship the new per-user Inno Setup installer (`safe.exe`) for user-scope installs only (adds/removes user PATH entry and preserves `.safe` archives on uninstall).
+
+---
+
+## 6. AI Assistance
+
+Development included AI-assisted implementation and cleanup support with:
+1. **ChatGPT (GPT-5.3-Codex)**
+2. **GitHub Copilot**
+13. Unlock reliability fixes:
+   - Successful decrypt/restore is treated as success even if archive cleanup fails
+   - Plaintext entries are preferred over stale `.safe` entries when both exist

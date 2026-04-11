@@ -2,7 +2,6 @@
 #include <vector>
 #include <string>
 #include <cstdint>
-#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -25,6 +24,28 @@ namespace safe::core
 
         std::wstring BuildArchivePath(const std::wstring& basePath) {
             return basePath + L".safe";
+        }
+
+        void ClearReadOnlyAttribute(const std::filesystem::path& path) {
+            const std::wstring widePath = path.wstring();
+            const DWORD attrs = GetFileAttributesW(widePath.c_str());
+            if (attrs == INVALID_FILE_ATTRIBUTES) return;
+            if ((attrs & FILE_ATTRIBUTE_READONLY) != 0) {
+                SetFileAttributesW(widePath.c_str(), attrs & ~FILE_ATTRIBUTE_READONLY);
+            }
+        }
+
+        void MakePathDeletable(const std::filesystem::path& path) {
+            std::error_code ec;
+            if (!std::filesystem::exists(path, ec) || ec) return;
+
+            if (std::filesystem::is_directory(path, ec) && !ec) {
+                for (std::filesystem::recursive_directory_iterator it(path, ec), end; it != end && !ec; it.increment(ec)) {
+                    if (ec) break;
+                    ClearReadOnlyAttribute(it->path());
+                }
+            }
+            ClearReadOnlyAttribute(path);
         }
 
         void WriteU32(std::vector<uint8_t>& out, std::uint32_t value) {
@@ -95,7 +116,7 @@ namespace safe::core
                     hAlg,
                     BCRYPT_CHAINING_MODE,
                     reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(BCRYPT_CHAIN_MODE_CBC)),
-                    static_cast<ULONG>((std::wcslen(BCRYPT_CHAIN_MODE_CBC) + 1) * sizeof(wchar_t)),
+                    static_cast<ULONG>(sizeof(BCRYPT_CHAIN_MODE_CBC)),
                     0) != 0) {
                 BCryptCloseAlgorithmProvider(hAlg, 0);
                 return false;
@@ -212,12 +233,24 @@ namespace safe::core
             std::vector<std::filesystem::path> files;
 
             if (sourceKind == SOURCE_KIND_DIRECTORY) {
-                if (!std::filesystem::exists(inputPath) || !std::filesystem::is_directory(inputPath)) return false;
-                for (const auto& entry : std::filesystem::recursive_directory_iterator(inputPath)) {
-                    if (entry.is_regular_file()) files.push_back(entry.path());
+                std::error_code ec;
+                if (!std::filesystem::exists(inputPath, ec) || ec) return false;
+                if (!std::filesystem::is_directory(inputPath, ec) || ec) return false;
+
+                for (std::filesystem::recursive_directory_iterator it(inputPath, std::filesystem::directory_options::none, ec), end;
+                     it != end;
+                     it.increment(ec)) {
+                    if (ec) return false;
+                    if (it->is_regular_file(ec) && !ec) {
+                        files.push_back(it->path());
+                    } else if (ec) {
+                        return false;
+                    }
                 }
             } else {
-                if (!std::filesystem::exists(inputPath) || !std::filesystem::is_regular_file(inputPath)) return false;
+                std::error_code ec;
+                if (!std::filesystem::exists(inputPath, ec) || ec) return false;
+                if (!std::filesystem::is_regular_file(inputPath, ec) || ec) return false;
                 files.push_back(inputPath);
             }
 
@@ -226,9 +259,15 @@ namespace safe::core
             WriteU32(archive, static_cast<std::uint32_t>(files.size()));
 
             for (const auto& filePath : files) {
-                const std::u8string relativePath = sourceKind == SOURCE_KIND_DIRECTORY
-                    ? std::filesystem::relative(filePath, inputPath).generic_u8string()
-                    : filePath.filename().generic_u8string();
+                std::u8string relativePath;
+                if (sourceKind == SOURCE_KIND_DIRECTORY) {
+                    std::error_code relativeError;
+                    const std::filesystem::path relative = std::filesystem::relative(filePath, inputPath, relativeError);
+                    if (relativeError || relative.empty()) return false;
+                    relativePath = relative.generic_u8string();
+                } else {
+                    relativePath = filePath.filename().generic_u8string();
+                }
 
                 std::ifstream input(filePath, std::ios::binary | std::ios::ate);
                 if (!input.is_open()) return false;
@@ -382,15 +421,20 @@ namespace safe::core
         , m_lastModified(0)
         , m_createdAt(0)
     {
-        RefreshMetadata();
+        (void)RefreshMetadata();
     }
 
     bool Folder::Lock(const std::string& password) {
-        if (password.empty() || m_status == FolderStatus::Locked) return false;
+        if (password.empty()) return false;
 
         const std::filesystem::path inputPath(m_path);
-        const bool isDirectory = std::filesystem::exists(inputPath) && std::filesystem::is_directory(inputPath);
-        const bool isFile = std::filesystem::exists(inputPath) && std::filesystem::is_regular_file(inputPath);
+        std::error_code typeError;
+        const bool exists = std::filesystem::exists(inputPath, typeError);
+        if (typeError || !exists) return false;
+        const bool isDirectory = std::filesystem::is_directory(inputPath, typeError);
+        if (typeError) return false;
+        const bool isFile = std::filesystem::is_regular_file(inputPath, typeError);
+        if (typeError) return false;
         if (!isDirectory && !isFile) return false;
 
         const std::uint8_t sourceKind = isDirectory ? SOURCE_KIND_DIRECTORY : SOURCE_KIND_FILE;
@@ -401,8 +445,17 @@ namespace safe::core
         std::vector<uint8_t> container;
         if (!BuildEncryptedContainer(password, sourceKind, archive, container)) return false;
 
+        const std::wstring archivePath = BuildArchivePath(m_path);
+        if (const bool archiveAlreadyExists = Filesystem::FileExists(archivePath); archiveAlreadyExists) {
+            // Recover from stale archives left behind by interrupted lock/unlock attempts.
+            if (!Filesystem::DeleteFile(archivePath)) {
+                m_status = FolderStatus::Error;
+                return false;
+            }
+        }
+
         m_status = FolderStatus::Processing;
-        m_lockedPath = BuildArchivePath(m_path);
+        m_lockedPath = archivePath;
         const std::wstring tempArchivePath = m_lockedPath + L".tmp";
 
         // Clean up stale temp/output files from interrupted attempts.
@@ -431,6 +484,7 @@ namespace safe::core
 
         bool removedOriginal = false;
         if (isDirectory) {
+            MakePathDeletable(inputPath);
             std::error_code removeError;
             std::filesystem::remove_all(inputPath, removeError);
             removedOriginal = !removeError;
@@ -468,12 +522,20 @@ namespace safe::core
 
         m_status = FolderStatus::Processing;
         const std::filesystem::path outputPath(m_path);
+        std::error_code outputStateError;
+        const bool outputExists = std::filesystem::exists(outputPath, outputStateError);
+        if (outputStateError) {
+            m_status = FolderStatus::Error;
+            return false;
+        }
 
         if (sourceKind == SOURCE_KIND_DIRECTORY) {
-            if (std::filesystem::exists(outputPath) && !std::filesystem::is_directory(outputPath)) {
-                std::error_code removeFileError;
-                std::filesystem::remove(outputPath, removeFileError);
-                if (removeFileError) {
+            if (outputExists && !std::filesystem::is_directory(outputPath, outputStateError)) {
+                if (outputStateError) {
+                    m_status = FolderStatus::Error;
+                    return false;
+                }
+                if (!Filesystem::DeleteFile(outputPath.wstring())) {
                     m_status = FolderStatus::Error;
                     return false;
                 }
@@ -485,7 +547,12 @@ namespace safe::core
                 return false;
             }
         } else {
-            if (std::filesystem::exists(outputPath) && std::filesystem::is_directory(outputPath)) {
+            if (outputExists && std::filesystem::is_directory(outputPath, outputStateError)) {
+                if (outputStateError) {
+                    m_status = FolderStatus::Error;
+                    return false;
+                }
+                MakePathDeletable(outputPath);
                 std::error_code removeDirError;
                 std::filesystem::remove_all(outputPath, removeDirError);
                 if (removeDirError) {
@@ -508,10 +575,9 @@ namespace safe::core
             return false;
         }
 
-        if (!Filesystem::DeleteFile(archivePath)) {
-            m_status = FolderStatus::Error;
-            return false;
-        }
+        // Archive cleanup failure should not negate a successful decrypt/restore.
+        // The plaintext data is already restored at this point.
+        (void)Filesystem::DeleteFile(archivePath);
 
         m_lockedPath.clear();
         m_status = FolderStatus::Unlocked;
@@ -531,15 +597,15 @@ namespace safe::core
             std::error_code sizeError;
             m_sizeBytes = std::filesystem::file_size(archiveFsPath, sizeError);
             if (sizeError) m_sizeBytes = 0;
-            m_lastModified = Filesystem::GetLastModifiedTime(archivePath);
-            m_createdAt = Filesystem::GetCreationTime(archivePath);
+            m_lastModified = static_cast<std::int64_t>(Filesystem::GetLastModifiedTime(archivePath));
+            m_createdAt = static_cast<std::int64_t>(Filesystem::GetCreationTime(archivePath));
             return true;
         }
 
         if (Filesystem::DirectoryExists(m_path)) {
             m_sizeBytes = Filesystem::GetDirectorySize(m_path);
-            m_lastModified = Filesystem::GetLastModifiedTime(m_path);
-            m_createdAt = Filesystem::GetCreationTime(m_path);
+            m_lastModified = static_cast<std::int64_t>(Filesystem::GetLastModifiedTime(m_path));
+            m_createdAt = static_cast<std::int64_t>(Filesystem::GetCreationTime(m_path));
             m_lockedPath.clear();
             m_status = FolderStatus::Unlocked;
             return true;
@@ -547,8 +613,8 @@ namespace safe::core
 
         if (Filesystem::FileExists(m_path)) {
             m_sizeBytes = Filesystem::GetFileSize(m_path);
-            m_lastModified = Filesystem::GetLastModifiedTime(m_path);
-            m_createdAt = Filesystem::GetCreationTime(m_path);
+            m_lastModified = static_cast<std::int64_t>(Filesystem::GetLastModifiedTime(m_path));
+            m_createdAt = static_cast<std::int64_t>(Filesystem::GetCreationTime(m_path));
             m_lockedPath.clear();
             m_status = FolderStatus::Unlocked;
             return true;

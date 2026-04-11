@@ -28,7 +28,7 @@ namespace safe::core
         u32 minor;
         u32 patch;
 
-        std::string ToString() const;
+        [[nodiscard]] std::string ToString() const;
     };
 
     constexpr Version APP_VERSION = { 1, 0, 0 };

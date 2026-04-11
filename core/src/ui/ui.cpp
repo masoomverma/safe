@@ -75,6 +75,7 @@ namespace safe::ui
 
     static std::vector<Item> items;
     static std::unordered_set<std::string> selectedItemIds;
+    static std::string focusedItemId;
     static bool multiSelectMode = false;
     static size_t selectionAnchorIndex = 0;
     static bool hasSelectionAnchor = false;
@@ -83,6 +84,7 @@ namespace safe::ui
     static char searchBuffer[SEARCH_BUFFER_SIZE] = "";
     static std::string statusMessage = "Ready";
     static bool showPasswordPopup = false;
+    static bool passwordPopupNeedsOpen = false;
     static bool passwordModeIsLock = true;
     static char passwordBuffer[PASSWORD_BUFFER_SIZE] = "";
 
@@ -105,7 +107,6 @@ namespace safe::ui
     static std::wstring StripSafeArchiveExtension(const std::wstring& archivePath);
     static bool IsValidIndex(size_t index);
     static const Item* FindItemById(const std::string& id);
-    static void GetSelectionState(bool& anyLocked, bool& anyUnlocked, bool& hasInvalidSelection);
     static std::wstring OpenFolderDialog();
     static bool InitializePersistence();
     static void ShutdownPersistence();
@@ -125,6 +126,7 @@ namespace safe::ui
     static bool LoadItemsFromPath(const std::wstring& rootPath);
     static void ResetSelection();
     static std::vector<size_t> GetSelectedIndices();
+    static std::vector<size_t> GetOperationIndices();
     static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter);
     static void OpenPasswordPopup(bool forLockOperation);
 
@@ -363,23 +365,6 @@ namespace safe::ui
     static const Item* FindItemById(const std::string& id) {
         auto it = std::ranges::find_if(items, [&](const Item& item) { return item.id == id; });
         return it == items.end() ? nullptr : &(*it);
-    }
-
-    static void GetSelectionState(bool& anyLocked, bool& anyUnlocked, bool& hasInvalidSelection)
-    {
-        anyLocked = false;
-        anyUnlocked = false;
-        hasInvalidSelection = false;
-
-        for (const std::string& selectedId : selectedItemIds) {
-            const Item* item = FindItemById(selectedId);
-            if (!item) {
-                hasInvalidSelection = true;
-                continue;
-            }
-            if (item->isLocked) anyLocked = true;
-            else anyUnlocked = true;
-        }
     }
 
     static std::wstring OpenFolderDialog() {
@@ -663,8 +648,7 @@ namespace safe::ui
         sqlite3_bind_text(stmt, 1, "last_opened_root", -1, SQLITE_STATIC);
         std::wstring rootPath;
         if (sqlite3_step(stmt) == SQLITE_ROW) {
-            const auto* valueText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            if (valueText) {
+            if (const auto* valueText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)); valueText) {
                 rootPath = Utf8ToWide(std::string(valueText));
             }
         }
@@ -746,6 +730,11 @@ namespace safe::ui
             item.path = logicalPath;
             item.sourcePath = archivePath;
             item.id = BuildStableItemId(logicalPath);
+            if (loadedById.contains(item.id)) {
+                // Prefer plaintext entries when both plaintext and .safe exist
+                // (e.g., archive cleanup failure after successful unlock).
+                continue;
+            }
             item.name = WideToUtf8(core::Filesystem::GetFileName(logicalPath));
             item.isFolder = true;
             item.isLocked = true;
@@ -785,6 +774,7 @@ namespace safe::ui
 
     static void ResetSelection() {
         selectedItemIds.clear();
+        focusedItemId.clear();
         multiSelectMode = false;
         hasSelectionAnchor = false;
         selectionAnchorIndex = 0;
@@ -801,6 +791,24 @@ namespace safe::ui
         return out;
     }
 
+    static std::vector<size_t> GetOperationIndices() {
+        std::vector<size_t> indices = GetSelectedIndices();
+        if (!indices.empty()) {
+            return indices;
+        }
+
+        if (focusedItemId.empty()) {
+            return {};
+        }
+
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (items[i].id == focusedItemId) {
+                return { i };
+            }
+        }
+        return {};
+    }
+
     static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter) {
         if (!hasSearchFilter) return true;
         return ToLower(item.name).find(lowerSearchText) != std::string::npos;
@@ -810,7 +818,7 @@ namespace safe::ui
         passwordModeIsLock = forLockOperation;
         passwordBuffer[0] = '\0';
         showPasswordPopup = true;
-        ImGui::OpenPopup(forLockOperation ? "Lock Password" : "Unlock Password");
+        passwordPopupNeedsOpen = true;
     }
 
     static void RenderMainLayout()
@@ -928,16 +936,25 @@ namespace safe::ui
         bool anyLocked = false;
         bool anyUnlocked = false;
         bool hasInvalidSelection = false;
-        GetSelectionState(anyLocked, anyUnlocked, hasInvalidSelection);
+
+        const std::vector<size_t> operationIndices = GetOperationIndices();
+        for (const size_t idx : operationIndices) {
+            if (!IsValidIndex(idx)) {
+                hasInvalidSelection = true;
+                continue;
+            }
+            if (items[idx].isLocked) anyLocked = true;
+            else anyUnlocked = true;
+        }
 
         if (hasInvalidSelection)
         {
             statusMessage = "Invalid selection detected";
         }
 
-        const bool hasSelection = !selectedItemIds.empty();
-        const bool canLock = hasSelection && anyUnlocked && !anyLocked;
-        const bool canUnlock = hasSelection && anyLocked && !anyUnlocked;
+        const bool hasOperationTargets = !operationIndices.empty();
+        const bool canLock = hasOperationTargets && anyUnlocked && !anyLocked;
+        const bool canUnlock = hasOperationTargets && anyLocked && !anyUnlocked;
 
         if (!canLock) ImGui::BeginDisabled();
 
@@ -959,7 +976,7 @@ namespace safe::ui
 
         if (!canUnlock) ImGui::EndDisabled();
 
-        if (hasSelection && anyLocked && anyUnlocked)
+        if (hasOperationTargets && anyLocked && anyUnlocked)
         {
             statusMessage = "Mixed selection: Select either locked or unlocked items";
         }
@@ -997,15 +1014,19 @@ namespace safe::ui
             const auto& item = items[i];
             if (!ItemMatchesFilter(item, lowerSearchText, hasSearchFilter)) continue;
             const bool selected = selectedItemIds.contains(item.id);
+            const bool focused = focusedItemId == item.id;
+            const bool highlighted = selected || (selectedItemIds.empty() && focused);
             const char* icon = item.isLocked ? "[L] " : (item.isFolder ? "[D] " : "[F] ");
             const std::string label = std::string(icon) + item.name;
 
             ImGui::PushID(static_cast<int>(i));
-            const bool clicked = ImGui::Selectable(label.c_str(), selected);
+            const bool clicked = ImGui::Selectable(label.c_str(), highlighted);
             ImGui::PopID();
 
             if (clicked)
             {
+                focusedItemId = item.id;
+
                 if (shiftDown)
                 {
                     if (!hasSelectionAnchor || !IsValidIndex(selectionAnchorIndex))
@@ -1041,8 +1062,10 @@ namespace safe::ui
                 }
                 else
                 {
-                    selectedItemIds.clear();
-                    selectedItemIds.insert(item.id);
+                    // Plain click only focuses item for details; selection is modifier/select-mode only.
+                    if (!selectedItemIds.empty()) {
+                        selectedItemIds.clear();
+                    }
                     selectionAnchorIndex = i;
                     hasSelectionAnchor = true;
                 }
@@ -1054,6 +1077,22 @@ namespace safe::ui
     {
         if (selectedItemIds.empty())
         {
+            if (!focusedItemId.empty()) {
+                if (const Item* focusedItem = FindItemById(focusedItemId); focusedItem) {
+                    ImGui::Text("Name: %s", focusedItem->name.c_str());
+                    ImGui::Text("Type: %s", focusedItem->isFolder ? "Folder" : "File");
+                    ImGui::Text("Status: %s", focusedItem->isLocked ? "Locked" : "Unlocked");
+                    ImGui::Text("Size: %s", FormatBytes(focusedItem->sizeBytes).c_str());
+                    ImGui::Text("Path: %s", WideToUtf8(focusedItem->path).c_str());
+                    ImGui::Text("Source Path: %s", WideToUtf8(focusedItem->sourcePath).c_str());
+                    ImGui::Text("Last Modified: %s", FormatDateTime(focusedItem->lastModified).c_str());
+                    ImGui::Text("Item ID: %s", focusedItem->id.c_str());
+                    ImGui::Spacing();
+                    ImGui::Separator();
+                    return;
+                }
+                focusedItemId.clear();
+            }
             ImGui::Text("No item selected");
             ImGui::TextDisabled("Select a file or folder to view details");
             return;
@@ -1112,14 +1151,17 @@ namespace safe::ui
             return;
 
         const char* popupTitle = passwordModeIsLock ? "Lock Password" : "Unlock Password";
+        if (passwordPopupNeedsOpen) {
+            ImGui::OpenPopup(popupTitle);
+            passwordPopupNeedsOpen = false;
+        }
         ImGui::SetNextWindowSize(ImVec2(460, 180), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
         if (ImGui::BeginPopupModal(popupTitle, &showPasswordPopup, ImGuiWindowFlags_AlwaysAutoResize))
         {
             ImGui::TextWrapped(passwordModeIsLock
                 ? "Enter a password to lock the selected items."
-                : "Enter the password used to lock the selected items.");
+                : "Enter the password to unlock the selected items.");
             ImGui::Spacing();
             ImGui::SetNextItemWidth(-1);
             ImGui::InputTextWithHint("##password", "Password", passwordBuffer, PASSWORD_BUFFER_SIZE, ImGuiInputTextFlags_Password);
@@ -1145,6 +1187,7 @@ namespace safe::ui
                         ? (passwordModeIsLock ? "Locked selected item(s)" : "Unlocked selected item(s)")
                         : (passwordModeIsLock ? "Lock failed for one or more items" : "Unlock failed: incorrect password or metadata error");
                     showPasswordPopup = false;
+                    passwordPopupNeedsOpen = false;
                 }
             }
 
@@ -1153,6 +1196,7 @@ namespace safe::ui
             if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0)))
             {
                 showPasswordPopup = false;
+                passwordPopupNeedsOpen = false;
                 statusMessage = passwordModeIsLock ? "Lock cancelled" : "Unlock cancelled";
             }
 
@@ -1162,14 +1206,15 @@ namespace safe::ui
 
     static void PerformLockOperation()
     {
-        if (selectedItemIds.empty())
+        const std::vector<size_t> operationIndices = GetOperationIndices();
+        if (operationIndices.empty())
         {
-            statusMessage = "No items selected";
+            statusMessage = "No item selected";
             return;
         }
 
         bool anyLocked = false;
-        for (const size_t idx : GetSelectedIndices())
+        for (const size_t idx : operationIndices)
         {
             if (!IsValidIndex(idx)) continue;
             if (items[idx].isLocked)
@@ -1190,14 +1235,15 @@ namespace safe::ui
 
     static void PerformUnlockOperation()
     {
-        if (selectedItemIds.empty())
+        const std::vector<size_t> operationIndices = GetOperationIndices();
+        if (operationIndices.empty())
         {
-            statusMessage = "No items selected";
+            statusMessage = "No item selected";
             return;
         }
 
         bool allLocked = true;
-        for (const size_t idx : GetSelectedIndices())
+        for (const size_t idx : operationIndices)
         {
             if (!IsValidIndex(idx)) continue;
             if (!items[idx].isLocked)
@@ -1219,7 +1265,7 @@ namespace safe::ui
     static bool ApplyLockOperation(const std::string& password) {
         bool allCoreOpsSucceeded = true;
         bool anyChanged = false;
-        for (const size_t idx : GetSelectedIndices()) {
+        for (const size_t idx : GetOperationIndices()) {
             if (!IsValidIndex(idx)) {
                 allCoreOpsSucceeded = false;
                 continue;
@@ -1265,12 +1311,14 @@ namespace safe::ui
     static bool ApplyUnlockOperation(const std::string& password) {
         bool allCoreOpsSucceeded = true;
         bool anyChanged = false;
-        for (const size_t idx : GetSelectedIndices()) {
+        for (const size_t idx : GetOperationIndices()) {
             if (!IsValidIndex(idx)) {
                 allCoreOpsSucceeded = false;
                 continue;
             }
 
+            // Treat persisted verifier metadata as advisory only. The encrypted archive
+            // remains the source of truth for password validity.
             if (!items[idx].passwordHash.empty() && !items[idx].passwordSalt.empty()) {
                 std::vector<uint8_t> salt;
                 std::vector<uint8_t> storedVerifier;
@@ -1278,17 +1326,23 @@ namespace safe::ui
                     !salt.empty() && !storedVerifier.empty()) {
                     std::vector<uint8_t> computedVerifier;
                     const int iterations = items[idx].kdfIterations > 0 ? items[idx].kdfIterations : DB_DEFAULT_KDF_ITERATIONS;
-                    if (!DerivePasswordVerifier(password, salt, iterations, computedVerifier) || !ConstantTimeEqual(storedVerifier, computedVerifier)) {
-                        allCoreOpsSucceeded = false;
-                        continue;
+                    if (DerivePasswordVerifier(password, salt, iterations, computedVerifier)) {
+                        (void)ConstantTimeEqual(storedVerifier, computedVerifier);
                     }
                 }
             }
 
             core::Folder folder(items[idx].path);
             if (!folder.Unlock(password)) {
-                allCoreOpsSucceeded = false;
-                continue;
+                const std::wstring archivePath = items[idx].path + L".safe";
+                const bool archiveExists = core::Filesystem::FileExists(archivePath);
+                const bool plaintextExists =
+                    core::Filesystem::DirectoryExists(items[idx].path) ||
+                    core::Filesystem::FileExists(items[idx].path);
+                if (archiveExists || !plaintextExists) {
+                    allCoreOpsSucceeded = false;
+                    continue;
+                }
             }
 
             items[idx].isLocked = false;

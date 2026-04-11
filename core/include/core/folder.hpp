@@ -3,7 +3,6 @@
 
 #include <string>
 #include <cstdint>
-#include <ctime>
 
 namespace safe::core
 {
@@ -24,21 +23,21 @@ namespace safe::core
         std::wstring m_lockedPath;        // Path to .safe archive (if locked)
         FolderStatus m_status;
         uint64_t m_sizeBytes;
-        time_t m_lastModified;
-        time_t m_createdAt;
+        std::int64_t m_lastModified;
+        std::int64_t m_createdAt;
 
     public:
         Folder();
         Folder(std::wstring  folderPath);
 
         // Getters
-        int GetId() const { return m_id; }
-        const std::wstring& GetPath() const { return m_path; }
-        const std::wstring& GetLockedPath() const { return m_lockedPath; }
-        FolderStatus GetStatus() const { return m_status; }
-        uint64_t GetSizeBytes() const { return m_sizeBytes; }
-        time_t GetLastModified() const { return m_lastModified; }
-        time_t GetCreatedAt() const { return m_createdAt; }
+        [[nodiscard]] int GetId() const { return m_id; }
+        [[nodiscard]] const std::wstring& GetPath() const { return m_path; }
+        [[nodiscard]] const std::wstring& GetLockedPath() const { return m_lockedPath; }
+        [[nodiscard]] FolderStatus GetStatus() const { return m_status; }
+        [[nodiscard]] uint64_t GetSizeBytes() const { return m_sizeBytes; }
+        [[nodiscard]] std::int64_t GetLastModified() const { return m_lastModified; }
+        [[nodiscard]] std::int64_t GetCreatedAt() const { return m_createdAt; }
 
         // Setters
         void SetId(int id) { m_id = id; }
@@ -51,9 +50,9 @@ namespace safe::core
         bool Unlock(const std::string& password);
 
         // Utilities
-        std::wstring GetDisplayName() const;
-        bool RefreshMetadata();
-        bool IsValid() const;
+        [[nodiscard]] std::wstring GetDisplayName() const;
+        [[nodiscard]] bool RefreshMetadata();
+        [[nodiscard]] bool IsValid() const;
     };
 
 } // namespace safe::core

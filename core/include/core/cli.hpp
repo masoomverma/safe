@@ -16,7 +16,7 @@ namespace safe::core
         };
 
         // Parse command line arguments
-        static bool ParseArguments(int argc, char* argv[], std::vector<Command>& commands);
+        static bool ParseArguments(int argc, char* argv[], const std::vector<Command>& commands);
 
         // Help and usage
         static void ShowHelp();

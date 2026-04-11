@@ -3,6 +3,7 @@
 #include <fstream>
 #include <shlobj.h>
 #include <filesystem>
+#include <limits>
 
 // Undefine Windows macros that conflict with our method names
 #ifdef CreateDirectory
@@ -56,7 +57,10 @@ bool Filesystem::DeleteFile(const std::wstring& path) {
         std::ofstream file(path, std::ios::binary);
         if (!file.is_open()) return false;
 
-        file.write(reinterpret_cast<const char*>(data.data()), data.size());
+        if (data.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
+            return false;
+        }
+        file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
         return file.good();
     }
 
@@ -69,7 +73,7 @@ bool Filesystem::DeleteFile(const std::wstring& path) {
 
     std::wstring Filesystem::GetAppDataPath() {
         wchar_t buffer[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, buffer))) {
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, buffer))) {
             return std::wstring(buffer) + L"\\Safe";
         }
         return L"";
