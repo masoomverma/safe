@@ -11,7 +11,7 @@ namespace safe::core
     enum class FolderStatus
     {
         Unlocked,       // Normal folder
-        Locked,         // Encrypted .locked file exists
+        Locked,         // Encrypted .safe archive exists
         Processing,     // Operation in progress
         Error           // Error state
     };
@@ -21,7 +21,7 @@ namespace safe::core
     private:
         int m_id;
         std::wstring m_path;              // Original folder path
-        std::wstring m_lockedPath;        // Path to .locked file (if locked)
+        std::wstring m_lockedPath;        // Path to .safe archive (if locked)
         FolderStatus m_status;
         uint64_t m_sizeBytes;
         time_t m_lastModified;
@@ -29,7 +29,7 @@ namespace safe::core
 
     public:
         Folder();
-        Folder(const std::wstring& folderPath);
+        Folder(std::wstring  folderPath);
 
         // Getters
         int GetId() const { return m_id; }

@@ -63,6 +63,8 @@ target_link_libraries(Safe PRIVATE
     d3dcompiler
     dxgi
     dwmapi
+    shell32
+    bcrypt
 )
 
 # ── Compiler flags ────────────────────────────────────────────────────────────

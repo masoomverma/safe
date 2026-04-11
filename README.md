@@ -4,7 +4,8 @@
 
 1. Launch the app.
 2. Click **Open** in the top bar.
-3. Select the file/folder you want to work with (current builds may show placeholder behavior).
+3. Select a root folder from the system folder picker.
+4. The sidebar is populated from real filesystem folders and files in the selected root.
 
 ## 2. Select items
 
@@ -23,23 +24,35 @@
 
 1. Select unlocked item(s).
 2. Click **Lock**.
-3. If one item is selected, it locks directly.
-4. If multiple items are selected, choose:
-   - **Encrypt individually**, or
-   - **Combine into single .safe file** (enter name, then confirm).
+3. Enter a password in the lock popup.
+4. The selected item (file or folder) is packed and encrypted into a `.safe` archive, and the original item is removed.
 
 ## 4. Unlock
 
 1. Select locked item(s).
 2. Click **Unlock**.
-3. Unlock works when all selected items are locked.
+3. Enter the same password used to lock.
+4. The `.safe` archive is decrypted and the original file/folder content is restored to disk.
 
 ## 5. Search
 
 1. Use the **Search...** box in the top bar.
 2. The sidebar list filters items by name while you type.
 
+## 6. Item details
 
-## 6. Safe UI 
+1. The right panel shows real metadata for selected items.
+2. Metadata includes type, status, size, logical path, source path, and last-modified time.
+
+## 7. Persistence
+
+1. Item metadata is stored in `%APPDATA%\Safe\safe.db`.
+2. Lock state, item kind, and a salted PBKDF2 password verifier survive app restarts.
+3. Encrypted `.safe` archives are detected on reload and shown as locked entries.
+4. SQLite schema upgrades are migration-safe using `PRAGMA user_version`.
+5. The last opened root path is persisted and auto-loaded on next startup.
+
+
+## 8. Safe UI 
 
 ![Safe UI](assets/icons/Safe_UI.png)

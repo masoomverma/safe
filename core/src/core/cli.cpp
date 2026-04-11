@@ -2,25 +2,25 @@
 #include "core/types.hpp"
 #include <iostream>
 
-namespace safe::core {
+namespace safe::core
+{
+    bool CLI::ParseArguments(int argc, char* argv[], std::vector<Command>& commands) {
+        (void)argc;     // Unused parameter (stub implementation)
+        (void)argv;     // Unused parameter (stub implementation)
+        (void)commands; // Unused parameter (stub implementation)
+        return true;
+    }
 
-bool CLI::ParseArguments(int argc, char* argv[], std::vector<Command>& commands) {
-    (void)argc;     // Unused parameter (stub implementation)
-    (void)argv;     // Unused parameter (stub implementation)
-    (void)commands; // Unused parameter (stub implementation)
-    return true;
-}
+    void CLI::ShowHelp() {
+        std::cout << "Safe v" << APP_VERSION.major << "." << APP_VERSION.minor << "." << APP_VERSION.patch << "\n";
+        std::cout << "Usage: Safe [options]\n";
+        std::cout << "Options:\n";
+        std::cout << "  --help     Show this help message\n";
+        std::cout << "  --version  Show version information\n";
+    }
 
-void CLI::ShowHelp() {
-    std::cout << "Safe v" << APP_VERSION.major << "." << APP_VERSION.minor << "." << APP_VERSION.patch << "\n";
-    std::cout << "Usage: Safe [options]\n";
-    std::cout << "Options:\n";
-    std::cout << "  --help     Show this help message\n";
-    std::cout << "  --version  Show version information\n";
-}
-
-void CLI::ShowVersion() {
-    std::cout << "Safe version " << APP_VERSION.ToString() << "\n";
-}
+    void CLI::ShowVersion() {
+        std::cout << "Safe version " << APP_VERSION.ToString() << "\n";
+    }
 
 } // namespace safe::core

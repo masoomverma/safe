@@ -5,6 +5,17 @@
 #include <vector>
 #include <cstdint>
 
+// Prevent Win32 API macros from rewriting method identifiers.
+#ifdef CreateDirectory
+#undef CreateDirectory
+#endif
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
+#ifdef RemoveDirectory
+#undef RemoveDirectory
+#endif
+
 namespace safe::core
 {
 
@@ -19,8 +30,9 @@ namespace safe::core
 
         // Directory operations (NEW - Phase 3)
         static std::vector<std::wstring> ListDirectories(const std::wstring& path);
+        static std::vector<std::wstring> ListFiles(const std::wstring& path);
         static uint64_t GetDirectorySize(const std::wstring& path);
-        static bool CopyDirectory(const std::wstring& src, const std::wstring& dst);
+        static uint64_t GetFileSize(const std::wstring& path);
         static bool RemoveDirectory(const std::wstring& path);
 
         // Read/Write operations

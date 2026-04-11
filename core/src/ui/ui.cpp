@@ -1,118 +1,167 @@
-/**
- * Safe UI Implementation - Phase 3
- * 
- * SYSTEM SPECIFICATION:
- * - Manages files and folders locally
- * - Supports multiple item selection (Select mode / Ctrl+Click / Shift+Click)
- * - Lock/Unlock operations with encryption (placeholder for now)
- * - Search functionality with case-insensitive matching
- * - State-driven UI with proper button enable/disable logic
- * 
- * DATA MODEL:
- * - Item: {name, isFolder, isLocked}
- * 
- * STATE VARIABLES:
- * - items: Vector of all items in the system
- * - selectedIndices: Set of currently selected item indices
- * - searchBuffer: Current search query
- * - statusMessage: Current status message displayed to user
- * - showLockPopup: Whether lock options popup is visible
- * - combinedNameBuffer: Buffer for combined file name input
- * - selectedLockOption: Current lock option selection (0=Individual, 1=Combined)
- */
-
 #include "ui/ui.hpp"
+#include "core/filesystem.hpp"
+#include "core/folder.hpp"
+#include "sqlite3.h"
+
 #include "imgui.h"
+
+#include <windows.h>
+#include <shlobj.h>
+#include <bcrypt.h>
+
+// Avoid Windows API macro collisions with core::Filesystem methods.
+#ifdef CreateDirectory
+#undef CreateDirectory
+#endif
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
+#ifdef RemoveDirectory
+#undef RemoveDirectory
+#endif
+
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
 #include <string>
 #include <algorithm>
-#include <cctype>
+#include <cstdint>
+#include <ctime>
+#include <sstream>
+#include <iomanip>
+#include <ranges>
 
 namespace safe::ui
 {
-    // CONSTANTS
-    // UI Layout Constants
     namespace {
         constexpr float TOPBAR_HEIGHT = 41.0f;
+        constexpr float ROOTPATHBAR_HEIGHT = 28.0f;
         constexpr float STATUSBAR_HEIGHT = 30.0f;
         constexpr float SIDEBAR_WIDTH = 200.0f;
         constexpr float BUTTON_WIDTH = 80.0f;
         constexpr float SELECT_BUTTON_WIDTH = 90.0f;
         constexpr float BUTTON_SPACING = 10.0f;
-        constexpr float SEARCH_WIDTH = 200.0f;
+        constexpr float SEARCH_WIDTH = 220.0f;
         constexpr size_t SEARCH_BUFFER_SIZE = 128;
+        constexpr size_t PASSWORD_BUFFER_SIZE = 128;
+        constexpr int DB_SCHEMA_VERSION = 5;
+        constexpr int DB_DEFAULT_CRYPTO_VERSION = 1;
+        constexpr int DB_DEFAULT_KDF_ITERATIONS = 120000;
+        constexpr size_t PASSWORD_SALT_SIZE = 16;
+        constexpr size_t PASSWORD_VERIFIER_SIZE = 32;
     }
 
-
-    // DATA MODEL
-    /**
-     * Item represents a file or folder in the system
-     * - name: Display name of the item
-     * - isFolder: true if folder, false if file
-     * - isLocked: true if encrypted/locked, false otherwise
-     */
-    struct Item
-    {
+    struct Item {
+        std::string id;
+        std::wstring path;       // Logical path for lock/unlock operations.
+        std::wstring sourcePath; // Physical scanned path on disk.
         std::string name;
         bool isFolder{};
         bool isLocked{};
+        uint64_t sizeBytes{};
+        time_t lastModified{};
+        std::string passwordHash;
+        std::string passwordSalt;
+        int kdfIterations{DB_DEFAULT_KDF_ITERATIONS};
     };
 
-
-    // STATE VARIABLES
-    // Items list - currently static, will be replaced with database
-    // TODO: Replace with database-loaded items
-    static std::vector<Item> items =
-    {
-        {"Project", true, false},
-        {"SecretDocs", true, false},
-        {"Images", true, false}
+    struct PersistedState {
+        bool found{false};
+        bool isFolder{true};
+        std::string passwordHash;
+        std::string passwordSalt;
+        int kdfIterations{DB_DEFAULT_KDF_ITERATIONS};
     };
 
-    // Selection tracking - uses unordered_set for O(1) lookup
-    static std::unordered_set<size_t> selectedIndices;
+    static std::vector<Item> items;
+    static std::unordered_set<std::string> selectedItemIds;
     static bool multiSelectMode = false;
     static size_t selectionAnchorIndex = 0;
     static bool hasSelectionAnchor = false;
-    
-    // Search state
+
+    static std::wstring openedRootPath;
     static char searchBuffer[SEARCH_BUFFER_SIZE] = "";
-    
-    // Status message displayed in status bar
     static std::string statusMessage = "Ready";
-    
-    // Lock popup state
-    static bool showLockPopup = false;
-    static char combinedNameBuffer[256] = "";
-    static int selectedLockOption = 0; // 0 = Individual, 1 = Combined
+    static bool showPasswordPopup = false;
+    static bool passwordModeIsLock = true;
+    static char passwordBuffer[PASSWORD_BUFFER_SIZE] = "";
 
+    static sqlite3* g_db = nullptr;
 
-    // FORWARD DECLARATIONS
-    // Main rendering functions
+    static std::string ToLower(const std::string& str);
+    static std::string WideToUtf8(const std::wstring& wstr);
+    static std::wstring Utf8ToWide(const std::string& str);
+    static std::string FormatBytes(uint64_t bytes);
+    static std::string FormatDateTime(time_t timestamp);
+    static bool GenerateRandomBytes(std::vector<uint8_t>& bytes);
+    static bool DerivePasswordVerifier(const std::string& password, const std::vector<uint8_t>& salt, int iterations, std::vector<uint8_t>& verifierOut);
+    static std::string BytesToHex(const std::vector<uint8_t>& bytes);
+    static bool HexToBytes(const std::string& hex, std::vector<uint8_t>& bytes);
+    static bool ConstantTimeEqual(const std::vector<uint8_t>& lhs, const std::vector<uint8_t>& rhs);
+    static std::string HashString(const std::string& value);
+    static std::string BuildStableItemId(const std::wstring& path);
+    static std::vector<std::wstring> ListSafeArchives(const std::wstring& rootPath);
+    static bool HasSafeArchiveExtension(const std::wstring& fileName);
+    static std::wstring StripSafeArchiveExtension(const std::wstring& archivePath);
+    static bool IsValidIndex(size_t index);
+    static const Item* FindItemById(const std::string& id);
+    static void GetSelectionState(bool& anyLocked, bool& anyUnlocked, bool& hasInvalidSelection);
+    static std::wstring OpenFolderDialog();
+    static bool InitializePersistence();
+    static void ShutdownPersistence();
+    static bool RunMigrations();
+    static int GetSchemaVersion();
+    static bool SetSchemaVersion(int version);
+    static bool HasColumn(const char* tableName, const char* columnName);
+    static bool RunMigrationV1();
+    static bool RunMigrationV2();
+    static bool RunMigrationV3();
+    static bool RunMigrationV4();
+    static bool RunMigrationV5();
+    static std::wstring LoadLastOpenedRootPath();
+    static bool SaveLastOpenedRootPath(const std::wstring& rootPath);
+    static PersistedState ReadPersistedState(const std::string& itemId, const std::wstring& path);
+    static bool UpsertPersistedState(const Item& item);
+    static bool LoadItemsFromPath(const std::wstring& rootPath);
+    static void ResetSelection();
+    static std::vector<size_t> GetSelectedIndices();
+    static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter);
+    static void OpenPasswordPopup(bool forLockOperation);
+
     static void RenderMainLayout();
     static void RenderTopBar();
     static void RenderMainPanel();
     static void RenderStatusBar();
     static void RenderFolderList();
     static void RenderFolderDetails();
-    static void RenderLockPopup();
-
-    // Helper functions
-    static std::string ToLower(const std::string& str);
-    static bool IsValidIndex(size_t index);
-    static void GetSelectionState(bool& anyLocked, bool& anyUnlocked, bool& hasInvalidSelection);
-    
-    // Operation handlers
+    static void RenderPasswordPopup();
     static void PerformLockOperation();
     static void PerformUnlockOperation();
+    static bool ApplyLockOperation(const std::string& password);
+    static bool ApplyUnlockOperation(const std::string& password);
 
-    // PUBLIC API IMPLEMENTATION
     bool UI::s_initialized = false;
 
     bool UI::Initialize() {
+        if (!InitializePersistence()) {
+            statusMessage = "Failed to initialize metadata storage";
+            return false;
+        }
+
+        bool loaded = false;
+        const std::wstring lastRootPath = LoadLastOpenedRootPath();
+        if (!lastRootPath.empty()) {
+            loaded = LoadItemsFromPath(lastRootPath);
+        }
+
+        if (!loaded) {
+            loaded = LoadItemsFromPath(core::Filesystem::GetExecutablePath());
+        }
+
+        if (!loaded) {
+            statusMessage = "Open a folder to start";
+        }
         s_initialized = true;
-        statusMessage = "Ready";
         return true;
     }
 
@@ -125,31 +174,195 @@ namespace safe::ui
 
     void UI::Cleanup() {
         s_initialized = false;
-        selectedIndices.clear();
-        multiSelectMode = false;
-        hasSelectionAnchor = false;
+        ResetSelection();
         items.clear();
+        ShutdownPersistence();
     }
 
-
-    // HELPER FUNCTIONS
-    /**
-     * Converts a string to lowercase for case-insensitive comparison
-     * Uses C++20 ranges for modern, clean syntax
-     */
     static std::string ToLower(const std::string& str) {
         std::string result = str;
         std::ranges::transform(result, result.begin(),
-                               [](const unsigned char c) { return std::tolower(c); });
+                               [](const unsigned char c) {
+                                   if (c >= 'A' && c <= 'Z') {
+                                       return static_cast<char>(c - 'A' + 'a');
+                                   }
+                                   return static_cast<char>(c);
+                               });
         return result;
     }
 
-    /**
-     * Validates that an index is within bounds of the items vector
-     * Prevents out-of-bounds access crashes
-     */
+    static std::string WideToUtf8(const std::wstring& wstr) {
+        if (wstr.empty()) return {};
+        const int size = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+        std::string out(size, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), out.data(), size, nullptr, nullptr);
+        return out;
+    }
+
+    static std::wstring Utf8ToWide(const std::string& str) {
+        if (str.empty()) return {};
+        const int size = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), nullptr, 0);
+        if (size <= 0) return {};
+        std::wstring out(static_cast<size_t>(size), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), out.data(), size);
+        return out;
+    }
+
+    static std::string FormatBytes(uint64_t bytes) {
+        constexpr double KiB = 1024.0;
+        constexpr double MiB = KiB * 1024.0;
+        constexpr double GiB = MiB * 1024.0;
+
+        std::ostringstream out;
+        out << std::fixed << std::setprecision(2);
+        if (bytes >= static_cast<uint64_t>(GiB)) {
+            out << (static_cast<double>(bytes) / GiB) << " GiB";
+        } else if (bytes >= static_cast<uint64_t>(MiB)) {
+            out << (static_cast<double>(bytes) / MiB) << " MiB";
+        } else if (bytes >= static_cast<uint64_t>(KiB)) {
+            out << (static_cast<double>(bytes) / KiB) << " KiB";
+        } else {
+            out.str("");
+            out.clear();
+            out << bytes << " B";
+        }
+        return out.str();
+    }
+
+    static std::string FormatDateTime(time_t timestamp) {
+        if (timestamp <= 0) return "--";
+
+        std::tm tmLocal{};
+        if (localtime_s(&tmLocal, &timestamp) != 0) {
+            return "--";
+        }
+
+        std::ostringstream out;
+        out << std::put_time(&tmLocal, "%Y-%m-%d %H:%M:%S");
+        return out.str();
+    }
+
+    static bool GenerateRandomBytes(std::vector<uint8_t>& bytes) {
+        if (bytes.empty()) return true;
+        return BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+    }
+
+    static bool DerivePasswordVerifier(const std::string& password, const std::vector<uint8_t>& salt, int iterations, std::vector<uint8_t>& verifierOut) {
+        BCRYPT_ALG_HANDLE hPrf = nullptr;
+        if (BCryptOpenAlgorithmProvider(&hPrf, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0) {
+            return false;
+        }
+
+        verifierOut.assign(PASSWORD_VERIFIER_SIZE, 0);
+        const NTSTATUS status = BCryptDeriveKeyPBKDF2(
+            hPrf,
+            reinterpret_cast<PUCHAR>(const_cast<char*>(password.data())),
+            static_cast<ULONG>(password.size()),
+            const_cast<PUCHAR>(salt.data()),
+            static_cast<ULONG>(salt.size()),
+            static_cast<ULONGLONG>(iterations),
+            verifierOut.data(),
+            static_cast<ULONG>(verifierOut.size()),
+            0
+        );
+
+        BCryptCloseAlgorithmProvider(hPrf, 0);
+        return status == 0;
+    }
+
+    static std::string BytesToHex(const std::vector<uint8_t>& bytes) {
+        static constexpr char kHexChars[] = "0123456789abcdef";
+        std::string hex;
+        hex.resize(bytes.size() * 2);
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            hex[2 * i] = kHexChars[(bytes[i] >> 4) & 0x0F];
+            hex[2 * i + 1] = kHexChars[bytes[i] & 0x0F];
+        }
+        return hex;
+    }
+
+    static bool HexToBytes(const std::string& hex, std::vector<uint8_t>& bytes) {
+        if ((hex.size() % 2) != 0) return false;
+        auto hexValue = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+            if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+            return -1;
+        };
+
+        bytes.clear();
+        bytes.reserve(hex.size() / 2);
+        for (size_t i = 0; i < hex.size(); i += 2) {
+            const int hi = hexValue(hex[i]);
+            const int lo = hexValue(hex[i + 1]);
+            if (hi < 0 || lo < 0) return false;
+            bytes.push_back(static_cast<uint8_t>((hi << 4) | lo));
+        }
+        return true;
+    }
+
+    static bool ConstantTimeEqual(const std::vector<uint8_t>& lhs, const std::vector<uint8_t>& rhs) {
+        if (lhs.size() != rhs.size()) return false;
+        uint8_t diff = 0;
+        for (size_t i = 0; i < lhs.size(); ++i) {
+            diff |= static_cast<uint8_t>(lhs[i] ^ rhs[i]);
+        }
+        return diff == 0;
+    }
+
+    static std::string HashString(const std::string& value) {
+        // FNV-1a 64-bit
+        uint64_t hash = 14695981039346656037ULL;
+        for (const unsigned char ch : value) {
+            hash ^= ch;
+            hash *= 1099511628211ULL;
+        }
+        std::ostringstream out;
+        out << std::hex << std::setfill('0') << std::setw(16) << hash;
+        return out.str();
+    }
+
+    static std::string BuildStableItemId(const std::wstring& path) {
+        return HashString(WideToUtf8(path));
+    }
+
+    static std::vector<std::wstring> ListSafeArchives(const std::wstring& rootPath) {
+        std::vector<std::wstring> archives;
+        WIN32_FIND_DATAW findData;
+        const std::wstring pattern = core::Filesystem::JoinPath(rootPath, L"*.safe");
+        HANDLE hFind = FindFirstFileW(pattern.c_str(), &findData);
+        if (hFind == INVALID_HANDLE_VALUE) {
+            return archives;
+        }
+
+        do {
+            if ((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
+            archives.push_back(core::Filesystem::JoinPath(rootPath, findData.cFileName));
+        } while (FindNextFileW(hFind, &findData) != 0);
+
+        FindClose(hFind);
+        return archives;
+    }
+
+    static bool HasSafeArchiveExtension(const std::wstring& fileName) {
+        constexpr const wchar_t* extension = L".safe";
+        constexpr size_t extensionLength = 5;
+        if (fileName.size() <= extensionLength) return false;
+        return fileName.compare(fileName.size() - extensionLength, extensionLength, extension) == 0;
+    }
+
+    static std::wstring StripSafeArchiveExtension(const std::wstring& archivePath) {
+        if (!HasSafeArchiveExtension(archivePath)) return archivePath;
+        return archivePath.substr(0, archivePath.size() - 5);
+    }
+
     static bool IsValidIndex(size_t index) {
         return index < items.size();
+    }
+
+    static const Item* FindItemById(const std::string& id) {
+        auto it = std::ranges::find_if(items, [&](const Item& item) { return item.id == id; });
+        return it == items.end() ? nullptr : &(*it);
     }
 
     static void GetSelectionState(bool& anyLocked, bool& anyUnlocked, bool& hasInvalidSelection)
@@ -158,28 +371,448 @@ namespace safe::ui
         anyUnlocked = false;
         hasInvalidSelection = false;
 
-        for (const size_t idx : selectedIndices)
-        {
-            if (!IsValidIndex(idx))
-            {
+        for (const std::string& selectedId : selectedItemIds) {
+            const Item* item = FindItemById(selectedId);
+            if (!item) {
                 hasInvalidSelection = true;
                 continue;
             }
-
-            if (items[idx].isLocked) anyLocked = true;
+            if (item->isLocked) anyLocked = true;
             else anyUnlocked = true;
         }
     }
 
+    static std::wstring OpenFolderDialog() {
+        BROWSEINFOW bi = {};
+        bi.lpszTitle = L"Select folder to open";
+        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI | BIF_NEWDIALOGSTYLE;
+        PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
+        if (!pidl) return L"";
 
-    // UI RENDERING FUNCTIONS
-    /**
-     * Main layout container
-     * Creates fullscreen window with three sections:
-     * - TopBar: Search and quick actions
-     * - Middle: Sidebar + Main Panel
-     * - StatusBar: Status messages
-     */
+        wchar_t path[MAX_PATH] = {0};
+        const bool ok = SHGetPathFromIDListW(pidl, path) != 0;
+
+        IMalloc* allocator = nullptr;
+        if (SUCCEEDED(SHGetMalloc(&allocator)) && allocator) {
+            allocator->Free(pidl);
+            allocator->Release();
+        }
+
+        return ok ? std::wstring(path) : L"";
+    }
+
+    static bool InitializePersistence() {
+        if (g_db) return true;
+
+        const std::wstring appDataPath = core::Filesystem::GetAppDataPath();
+        if (appDataPath.empty()) return false;
+        if (!core::Filesystem::DirectoryExists(appDataPath) && !(core::Filesystem::CreateDirectory)(appDataPath)) {
+            return false;
+        }
+
+        const std::wstring dbPath = core::Filesystem::JoinPath(appDataPath, L"safe.db");
+        const std::string dbPathUtf8 = WideToUtf8(dbPath);
+        if (sqlite3_open(dbPathUtf8.c_str(), &g_db) != SQLITE_OK) {
+            if (g_db) {
+                sqlite3_close(g_db);
+                g_db = nullptr;
+            }
+            return false;
+        }
+        return RunMigrations();
+    }
+
+    static void ShutdownPersistence() {
+        if (g_db) {
+            sqlite3_close(g_db);
+            g_db = nullptr;
+        }
+    }
+
+    static int GetSchemaVersion() {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(g_db, "PRAGMA user_version;", -1, &stmt, nullptr) != SQLITE_OK) {
+            return -1;
+        }
+
+        int version = -1;
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            version = sqlite3_column_int(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+        return version;
+    }
+
+    static bool SetSchemaVersion(int version) {
+        const std::string sql = "PRAGMA user_version = " + std::to_string(version) + ";";
+        return sqlite3_exec(g_db, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK;
+    }
+
+    static bool HasColumn(const char* tableName, const char* columnName) {
+        const std::string pragma = "PRAGMA table_info(" + std::string(tableName) + ");";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(g_db, pragma.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            return false;
+        }
+
+        bool found = false;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char* currentName = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            if (currentName && std::string(currentName) == columnName) {
+                found = true;
+                break;
+            }
+        }
+        sqlite3_finalize(stmt);
+        return found;
+    }
+
+    static bool RunMigrationV1() {
+        static constexpr const char* sql =
+            "CREATE TABLE IF NOT EXISTS item_metadata ("
+            "item_id TEXT PRIMARY KEY,"
+            "path TEXT NOT NULL UNIQUE,"
+            "is_locked INTEGER NOT NULL DEFAULT 0,"
+            "password_hash TEXT,"
+            "updated_at INTEGER NOT NULL"
+            ");";
+        if (sqlite3_exec(g_db, sql, nullptr, nullptr, nullptr) != SQLITE_OK) {
+            return false;
+        }
+        return SetSchemaVersion(1);
+    }
+
+    static bool RunMigrationV2() {
+        if (!HasColumn("item_metadata", "crypto_version")) {
+            static constexpr const char* addCryptoVersion =
+                "ALTER TABLE item_metadata ADD COLUMN crypto_version INTEGER NOT NULL DEFAULT 1;";
+            if (sqlite3_exec(g_db, addCryptoVersion, nullptr, nullptr, nullptr) != SQLITE_OK) {
+                return false;
+            }
+        }
+
+        if (!HasColumn("item_metadata", "kdf_iterations")) {
+            static constexpr const char* addKdfIterations =
+                "ALTER TABLE item_metadata ADD COLUMN kdf_iterations INTEGER NOT NULL DEFAULT 120000;";
+            if (sqlite3_exec(g_db, addKdfIterations, nullptr, nullptr, nullptr) != SQLITE_OK) {
+                return false;
+            }
+        }
+
+        return SetSchemaVersion(2);
+    }
+
+    static bool RunMigrationV3() {
+        if (!HasColumn("item_metadata", "password_salt")) {
+            static constexpr const char* addPasswordSalt =
+                "ALTER TABLE item_metadata ADD COLUMN password_salt TEXT NOT NULL DEFAULT '';";
+            if (sqlite3_exec(g_db, addPasswordSalt, nullptr, nullptr, nullptr) != SQLITE_OK) {
+                return false;
+            }
+        }
+        return SetSchemaVersion(3);
+    }
+
+    static bool RunMigrationV4() {
+        if (!HasColumn("item_metadata", "item_kind")) {
+            static constexpr const char* addItemKind =
+                "ALTER TABLE item_metadata ADD COLUMN item_kind INTEGER NOT NULL DEFAULT 1;";
+            if (sqlite3_exec(g_db, addItemKind, nullptr, nullptr, nullptr) != SQLITE_OK) {
+                return false;
+            }
+        }
+        return SetSchemaVersion(4);
+    }
+
+    static bool RunMigrationV5() {
+        static constexpr const char* sql =
+            "CREATE TABLE IF NOT EXISTS app_state ("
+            "state_key TEXT PRIMARY KEY,"
+            "state_value TEXT NOT NULL"
+            ");";
+        if (sqlite3_exec(g_db, sql, nullptr, nullptr, nullptr) != SQLITE_OK) {
+            return false;
+        }
+        return SetSchemaVersion(5);
+    }
+
+    static bool RunMigrations() {
+        int version = GetSchemaVersion();
+        if (version < 0) return false;
+
+        if (sqlite3_exec(g_db, "BEGIN IMMEDIATE TRANSACTION;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            return false;
+        }
+
+        bool ok = true;
+        if (version < 1) {
+            ok = RunMigrationV1();
+            version = ok ? 1 : version;
+        }
+        if (ok && version < 2) {
+            ok = RunMigrationV2();
+            version = ok ? 2 : version;
+        }
+        if (ok && version < 3) {
+            ok = RunMigrationV3();
+            version = ok ? 3 : version;
+        }
+        if (ok && version < 4) {
+            ok = RunMigrationV4();
+            version = ok ? 4 : version;
+        }
+        if (ok && version < 5) {
+            ok = RunMigrationV5();
+            version = ok ? 5 : version;
+        }
+        if (ok && version != DB_SCHEMA_VERSION) {
+            ok = SetSchemaVersion(DB_SCHEMA_VERSION);
+        }
+
+        if (ok) {
+            ok = sqlite3_exec(g_db, "COMMIT;", nullptr, nullptr, nullptr) == SQLITE_OK;
+        } else {
+            sqlite3_exec(g_db, "ROLLBACK;", nullptr, nullptr, nullptr);
+        }
+
+        return ok;
+    }
+
+    static PersistedState ReadPersistedState(const std::string& itemId, const std::wstring& path) {
+        PersistedState state;
+        if (!g_db) return state;
+
+        static constexpr const char* sql =
+            "SELECT COALESCE(item_kind, 1), COALESCE(password_hash, ''), COALESCE(password_salt, ''), COALESCE(kdf_iterations, 120000) "
+            "FROM item_metadata WHERE item_id = ?1 OR path = ?2 LIMIT 1;";
+
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return state;
+
+        const std::string pathUtf8 = WideToUtf8(path);
+        sqlite3_bind_text(stmt, 1, itemId.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
+
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            state.found = true;
+            state.isFolder = sqlite3_column_int(stmt, 0) != 0;
+            const auto* hashText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            state.passwordHash = hashText ? std::string(hashText) : std::string{};
+            const auto* saltText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            state.passwordSalt = saltText ? std::string(saltText) : std::string{};
+            state.kdfIterations = sqlite3_column_int(stmt, 3);
+            if (state.kdfIterations <= 0) {
+                state.kdfIterations = DB_DEFAULT_KDF_ITERATIONS;
+            }
+        }
+
+        sqlite3_finalize(stmt);
+        return state;
+    }
+
+    static bool UpsertPersistedState(const Item& item) {
+        if (!g_db) return false;
+        static constexpr const char* cleanupSql =
+            "DELETE FROM item_metadata WHERE path = ?1 AND item_id != ?2;";
+        sqlite3_stmt* cleanupStmt = nullptr;
+        if (sqlite3_prepare_v2(g_db, cleanupSql, -1, &cleanupStmt, nullptr) != SQLITE_OK) return false;
+        const std::string pathUtf8 = WideToUtf8(item.path);
+        sqlite3_bind_text(cleanupStmt, 1, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(cleanupStmt, 2, item.id.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(cleanupStmt) != SQLITE_DONE) {
+            sqlite3_finalize(cleanupStmt);
+            return false;
+        }
+        sqlite3_finalize(cleanupStmt);
+
+        static constexpr const char* sql =
+            "INSERT INTO item_metadata(item_id, path, is_locked, item_kind, password_hash, password_salt, updated_at, crypto_version, kdf_iterations) "
+            "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) "
+            "ON CONFLICT(item_id) DO UPDATE SET "
+            "path=excluded.path, is_locked=excluded.is_locked, item_kind=excluded.item_kind, password_hash=excluded.password_hash, password_salt=excluded.password_salt, "
+            "updated_at=excluded.updated_at, crypto_version=excluded.crypto_version, kdf_iterations=excluded.kdf_iterations;";
+
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+
+        sqlite3_bind_text(stmt, 1, item.id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, pathUtf8.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 3, item.isLocked ? 1 : 0);
+        sqlite3_bind_int(stmt, 4, item.isFolder ? 1 : 0);
+        sqlite3_bind_text(stmt, 5, item.passwordHash.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 6, item.passwordSalt.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 7, static_cast<sqlite3_int64>(std::time(nullptr)));
+        sqlite3_bind_int(stmt, 8, DB_DEFAULT_CRYPTO_VERSION);
+        sqlite3_bind_int(stmt, 9, item.kdfIterations > 0 ? item.kdfIterations : DB_DEFAULT_KDF_ITERATIONS);
+
+        const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+        sqlite3_finalize(stmt);
+        return ok;
+    }
+
+    static std::wstring LoadLastOpenedRootPath() {
+        if (!g_db) return L"";
+
+        static constexpr const char* sql =
+            "SELECT state_value FROM app_state WHERE state_key = ?1 LIMIT 1;";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            return L"";
+        }
+
+        sqlite3_bind_text(stmt, 1, "last_opened_root", -1, SQLITE_STATIC);
+        std::wstring rootPath;
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const auto* valueText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            if (valueText) {
+                rootPath = Utf8ToWide(std::string(valueText));
+            }
+        }
+        sqlite3_finalize(stmt);
+        return rootPath;
+    }
+
+    static bool SaveLastOpenedRootPath(const std::wstring& rootPath) {
+        if (!g_db || rootPath.empty()) return false;
+
+        static constexpr const char* sql =
+            "INSERT INTO app_state(state_key, state_value) VALUES(?1, ?2) "
+            "ON CONFLICT(state_key) DO UPDATE SET state_value = excluded.state_value;";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            return false;
+        }
+
+        const std::string rootPathUtf8 = WideToUtf8(rootPath);
+        sqlite3_bind_text(stmt, 1, "last_opened_root", -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, rootPathUtf8.c_str(), -1, SQLITE_TRANSIENT);
+
+        const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+        sqlite3_finalize(stmt);
+        return ok;
+    }
+
+    static bool LoadItemsFromPath(const std::wstring& rootPath) {
+        if (!core::Filesystem::DirectoryExists(rootPath)) return false;
+
+        std::unordered_map<std::string, Item> loadedById;
+        const auto directories = core::Filesystem::ListDirectories(rootPath);
+        const auto files = core::Filesystem::ListFiles(rootPath);
+        const auto archives = ListSafeArchives(rootPath);
+        loadedById.reserve(directories.size() + files.size() + archives.size());
+
+        for (const auto& directoryPath : directories) {
+            Item item;
+            item.path = directoryPath;
+            item.sourcePath = directoryPath;
+            item.id = BuildStableItemId(directoryPath);
+            item.name = WideToUtf8(core::Filesystem::GetFileName(directoryPath));
+            item.isFolder = true;
+            item.isLocked = false;
+            item.sizeBytes = core::Filesystem::GetDirectorySize(directoryPath);
+            item.lastModified = core::Filesystem::GetLastModifiedTime(directoryPath);
+
+            const PersistedState persisted = ReadPersistedState(item.id, item.path);
+            item.passwordHash = persisted.passwordHash;
+            item.passwordSalt = persisted.passwordSalt;
+            item.kdfIterations = persisted.kdfIterations;
+            loadedById[item.id] = std::move(item);
+        }
+
+        for (const auto& filePath : files) {
+            if (HasSafeArchiveExtension(filePath)) {
+                continue;
+            }
+
+            Item item;
+            item.path = filePath;
+            item.sourcePath = filePath;
+            item.id = BuildStableItemId(filePath);
+            item.name = WideToUtf8(core::Filesystem::GetFileName(filePath));
+            item.isFolder = false;
+            item.isLocked = false;
+            item.sizeBytes = core::Filesystem::GetFileSize(filePath);
+            item.lastModified = core::Filesystem::GetLastModifiedTime(filePath);
+            const PersistedState persisted = ReadPersistedState(item.id, item.path);
+            item.passwordHash = persisted.passwordHash;
+            item.passwordSalt = persisted.passwordSalt;
+            item.kdfIterations = persisted.kdfIterations;
+            loadedById[item.id] = std::move(item);
+        }
+
+        for (const auto& archivePath : archives) {
+            const std::wstring logicalPath = StripSafeArchiveExtension(archivePath);
+            Item item;
+            item.path = logicalPath;
+            item.sourcePath = archivePath;
+            item.id = BuildStableItemId(logicalPath);
+            item.name = WideToUtf8(core::Filesystem::GetFileName(logicalPath));
+            item.isFolder = true;
+            item.isLocked = true;
+            item.sizeBytes = core::Filesystem::GetFileSize(archivePath);
+            item.lastModified = core::Filesystem::GetLastModifiedTime(archivePath);
+
+            const PersistedState persisted = ReadPersistedState(item.id, item.path);
+            if (persisted.found) {
+                item.isFolder = persisted.isFolder;
+                item.passwordHash = persisted.passwordHash;
+                item.passwordSalt = persisted.passwordSalt;
+                item.kdfIterations = persisted.kdfIterations;
+            }
+            loadedById[item.id] = std::move(item);
+        }
+
+        std::vector<Item> loaded;
+        loaded.reserve(loadedById.size());
+        for (auto& [id, item] : loadedById) {
+            (void)id;
+            loaded.push_back(std::move(item));
+        }
+
+        std::ranges::sort(loaded, [](const Item& a, const Item& b) { return a.name < b.name; });
+        items = std::move(loaded);
+        openedRootPath = rootPath;
+        ResetSelection();
+
+        for (const Item& item : items) {
+            UpsertPersistedState(item);
+        }
+
+        statusMessage = "Loaded " + std::to_string(items.size()) + " item(s)";
+        SaveLastOpenedRootPath(rootPath);
+        return true;
+    }
+
+    static void ResetSelection() {
+        selectedItemIds.clear();
+        multiSelectMode = false;
+        hasSelectionAnchor = false;
+        selectionAnchorIndex = 0;
+    }
+
+    static std::vector<size_t> GetSelectedIndices() {
+        std::vector<size_t> out;
+        out.reserve(selectedItemIds.size());
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (selectedItemIds.contains(items[i].id)) {
+                out.push_back(i);
+            }
+        }
+        return out;
+    }
+
+    static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter) {
+        if (!hasSearchFilter) return true;
+        return ToLower(item.name).find(lowerSearchText) != std::string::npos;
+    }
+
+    static void OpenPasswordPopup(bool forLockOperation) {
+        passwordModeIsLock = forLockOperation;
+        passwordBuffer[0] = '\0';
+        showPasswordPopup = true;
+        ImGui::OpenPopup(forLockOperation ? "Lock Password" : "Unlock Password");
+    }
+
     static void RenderMainLayout()
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -195,7 +828,7 @@ namespace safe::ui
                      );
 
         const float availableHeight = ImGui::GetContentRegionAvail().y - 8.0f;
-        const float middleHeight = availableHeight - TOPBAR_HEIGHT - STATUSBAR_HEIGHT;
+        const float middleHeight = availableHeight - TOPBAR_HEIGHT - ROOTPATHBAR_HEIGHT - STATUSBAR_HEIGHT;
 
         // Top Bar
         ImGui::BeginChild("TopBar", ImVec2(0, TOPBAR_HEIGHT), true, 
@@ -208,7 +841,7 @@ namespace safe::ui
 
         // Sidebar (Left)
         ImGui::BeginChild("Sidebar", ImVec2(SIDEBAR_WIDTH, 0), true);
-        ImGui::Text("Folders");
+        ImGui::Text("Items");
         ImGui::Separator();
         RenderFolderList();
         ImGui::EndChild();
@@ -217,11 +850,21 @@ namespace safe::ui
 
         // Main Panel (Right)
         ImGui::BeginChild("MainPanel", ImVec2(0, 0), true);
-        ImGui::Text("Folder Info");
+        ImGui::Text("Item Info");
         ImGui::Separator();
         RenderMainPanel();
         ImGui::EndChild();
 
+        ImGui::EndChild();
+
+        // Root Path Bar
+        ImGui::BeginChild("RootPathBar", ImVec2(0, ROOTPATHBAR_HEIGHT), true,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        if (!openedRootPath.empty()) {
+            ImGui::Text("Root: %s", WideToUtf8(openedRootPath).c_str());
+        } else {
+            ImGui::TextDisabled("Root: --");
+        }
         ImGui::EndChild();
 
         // Status Bar
@@ -231,24 +874,8 @@ namespace safe::ui
 
         ImGui::End();
         
-        // Render popups (must be outside main window)
-        RenderLockPopup();
+        RenderPasswordPopup();
     }
-
-    /**
-     * Top Bar Section
-     * Contains:
-     * - Search input for filtering items
-     * - Open button (placeholder for file picker)
-     * - Lock button (enabled when all selected are unlocked)
-     * - Unlock button (enabled when all selected are locked)
-     * 
-     * Button State Logic:
-     * - No selection: Both disabled
-     * - All unlocked: Lock enabled, Unlock disabled
-     * - All locked: Lock disabled, Unlock enabled
-     * - Mixed: Both disabled
-     */
 
     static void RenderTopBar()
     {
@@ -265,8 +892,12 @@ namespace safe::ui
 
         if (ImGui::Button("Open", ImVec2(BUTTON_WIDTH, 0)))
         {
-            // TODO: Implement file browser dialog
-            statusMessage = "Open: Not yet implemented";
+            const std::wstring selectedFolder = OpenFolderDialog();
+            if (selectedFolder.empty()) {
+                statusMessage = "Open cancelled";
+            } else if (!LoadItemsFromPath(selectedFolder)) {
+                statusMessage = "Failed to load selected folder";
+            }
         }
 
         ImGui::SameLine(0, BUTTON_SPACING);
@@ -304,7 +935,7 @@ namespace safe::ui
             statusMessage = "Invalid selection detected";
         }
 
-        const bool hasSelection = !selectedIndices.empty();
+        const bool hasSelection = !selectedItemIds.empty();
         const bool canLock = hasSelection && anyUnlocked && !anyLocked;
         const bool canUnlock = hasSelection && anyLocked && !anyUnlocked;
 
@@ -354,27 +985,8 @@ namespace safe::ui
         ImGui::Text("Status: %s", statusMessage.c_str());
     }
 
-    /**
-     * Folder List (Sidebar)
-     * 
-     * Displays all items in a single unified list
-     * Features:
-     * - Search filtering (case-insensitive)
-     * - Icon display based on type/state
-     * - Multiple selection support
-     * - Click to select/deselect
-     * - Ctrl+Click: toggle random/non-contiguous selection
-     * - Shift+Click: select contiguous range from anchor
-     * 
-     * Icons:
-     * - 🔒 Locked items
-     * - 📁 Unlocked folders
-     * - 📄 Unlocked files
-     */
-
     static void RenderFolderList()
     {
-        // Cache search filter state to avoid repeated strlen calls
         const bool hasSearchFilter = searchBuffer[0] != '\0';
         const std::string lowerSearchText = hasSearchFilter ? ToLower(searchBuffer) : "";
         const bool shiftDown = ImGui::GetIO().KeyShift;
@@ -382,20 +994,11 @@ namespace safe::ui
 
         for (size_t i = 0; i < items.size(); i++)
         {
-            // Search filter - case_insensitive
-            if (hasSearchFilter)
-            {
-                if (const std::string lowerName = ToLower(items[i].name); lowerName.find(lowerSearchText) ==
-                    std::string::npos)
-                    continue;
-            }
-
-            const auto& [name, isFolder, isLocked] = items[i];
-            const bool selected = selectedIndices.contains(i);
-
-            // Build label with icon
-            const char* icon = isLocked ? "🔒 " : (isFolder ? "📁 " : "📄 ");
-            const std::string label = std::string(icon) + name;
+            const auto& item = items[i];
+            if (!ItemMatchesFilter(item, lowerSearchText, hasSearchFilter)) continue;
+            const bool selected = selectedItemIds.contains(item.id);
+            const char* icon = item.isLocked ? "[L] " : (item.isFolder ? "[D] " : "[F] ");
+            const std::string label = std::string(icon) + item.name;
 
             ImGui::PushID(static_cast<int>(i));
             const bool clicked = ImGui::Selectable(label.c_str(), selected);
@@ -409,17 +1012,17 @@ namespace safe::ui
                     {
                         selectionAnchorIndex = i;
                         hasSelectionAnchor = true;
-                        selectedIndices.clear();
-                        selectedIndices.insert(i);
+                        selectedItemIds.clear();
+                        selectedItemIds.insert(item.id);
                     }
                     else
                     {
                         const size_t rangeStart = std::min(selectionAnchorIndex, i);
                         const size_t rangeEnd = std::max(selectionAnchorIndex, i);
-                        selectedIndices.clear();
+                        selectedItemIds.clear();
                         for (size_t idx = rangeStart; idx <= rangeEnd; ++idx)
                         {
-                            selectedIndices.insert(idx);
+                            selectedItemIds.insert(items[idx].id);
                         }
                     }
                 }
@@ -427,19 +1030,19 @@ namespace safe::ui
                 {
                     if (selected)
                     {
-                        selectedIndices.erase(i);
+                        selectedItemIds.erase(item.id);
                     }
                     else
                     {
-                        selectedIndices.insert(i);
+                        selectedItemIds.insert(item.id);
                     }
                     selectionAnchorIndex = i;
                     hasSelectionAnchor = true;
                 }
                 else
                 {
-                    selectedIndices.clear();
-                    selectedIndices.insert(i);
+                    selectedItemIds.clear();
+                    selectedItemIds.insert(item.id);
                     selectionAnchorIndex = i;
                     hasSelectionAnchor = true;
                 }
@@ -449,33 +1052,31 @@ namespace safe::ui
 
     static void RenderFolderDetails()
     {
-        if (selectedIndices.empty())
+        if (selectedItemIds.empty())
         {
             ImGui::Text("No item selected");
             ImGui::TextDisabled("Select a file or folder to view details");
             return;
         }
 
-        if (selectedIndices.size() == 1)
+        if (selectedItemIds.size() == 1)
         {
-            const size_t index = *selectedIndices.begin();
-            
-            // Bounds check
-            if (!IsValidIndex(index))
-            {
+            const std::string& selectedId = *selectedItemIds.begin();
+            const Item* item = FindItemById(selectedId);
+            if (!item) {
                 ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Error: Invalid selection");
-                selectedIndices.clear();
+                selectedItemIds.clear();
                 return;
             }
 
-            const auto& [name, isFolder, isLocked] = items[index];
-
-            ImGui::Text("Name: %s", name.c_str());
-            ImGui::Text("Type: %s", isFolder ? "Folder" : "File");
-            ImGui::Text("Status: %s", isLocked ? "Locked" : "Unlocked");
-            ImGui::Text("Size: --");
-            ImGui::Text("Path: --");
-            ImGui::Text("Last Modified: --");
+            ImGui::Text("Name: %s", item->name.c_str());
+            ImGui::Text("Type: %s", item->isFolder ? "Folder" : "File");
+            ImGui::Text("Status: %s", item->isLocked ? "Locked" : "Unlocked");
+            ImGui::Text("Size: %s", FormatBytes(item->sizeBytes).c_str());
+            ImGui::Text("Path: %s", WideToUtf8(item->path).c_str());
+            ImGui::Text("Source Path: %s", WideToUtf8(item->sourcePath).c_str());
+            ImGui::Text("Last Modified: %s", FormatDateTime(item->lastModified).c_str());
+            ImGui::Text("Item ID: %s", item->id.c_str());
             ImGui::Spacing();
             ImGui::Separator();
             return;
@@ -484,76 +1085,44 @@ namespace safe::ui
         // Multiple selection
         size_t folderCount = 0;
         size_t fileCount = 0;
+        uint64_t totalSize = 0;
 
-        for (const size_t idx : selectedIndices)
+        for (const size_t idx : GetSelectedIndices())
         {
             if (!IsValidIndex(idx)) continue;
             
             if (items[idx].isFolder) folderCount++;
             else fileCount++;
+            totalSize += items[idx].sizeBytes;
         }
 
-        ImGui::Text("Selected Items: %zu", selectedIndices.size());
+        ImGui::Text("Selected Items: %zu", selectedItemIds.size());
         ImGui::Text("Folders: %zu", folderCount);
         ImGui::Text("Files: %zu", fileCount);
+        ImGui::Text("Total Size: %s", FormatBytes(totalSize).c_str());
 
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::TextDisabled("Actions will apply to all selected items");
     }
 
-    // LOCK OPERATION POPUP
-    /**
-     * Lock Options Popup Modal
-     * 
-     * Displayed when locking multiple items
-     * Two options:
-     * 1. Encrypt individually - Each item locked separately
-     * 2. Combine into single .safe - Creates combined encrypted file
-     * 
-     * Validation:
-     * - Combined option requires a name to be entered
-     * - Empty name shows error message
-     */
-
-    static void RenderLockPopup()
+    static void RenderPasswordPopup()
     {
-        if (!showLockPopup)
+        if (!showPasswordPopup)
             return;
 
-        ImGui::SetNextWindowSize(ImVec2(450, 200), ImGuiCond_FirstUseEver);
+        const char* popupTitle = passwordModeIsLock ? "Lock Password" : "Unlock Password";
+        ImGui::SetNextWindowSize(ImVec2(460, 180), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
-        if (ImGui::BeginPopupModal("Lock Options", &showLockPopup, ImGuiWindowFlags_AlwaysAutoResize))
+        if (ImGui::BeginPopupModal(popupTitle, &showPasswordPopup, ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::TextWrapped("You have selected multiple items. Choose how to lock them:");
+            ImGui::TextWrapped(passwordModeIsLock
+                ? "Enter a password to lock the selected items."
+                : "Enter the password used to lock the selected items.");
             ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Spacing();
-
-            // Option 1: Encrypt individually
-            if (ImGui::RadioButton("Encrypt individually", selectedLockOption == 0))
-            {
-                selectedLockOption = 0;
-            }
-            ImGui::TextDisabled("Each item will be encrypted separately");
-            
-            ImGui::Spacing();
-
-            // Option 2: Combine into single .safe
-            if (ImGui::RadioButton("Combine into single .safe file", selectedLockOption == 1))
-            {
-                selectedLockOption = 1;
-            }
-            ImGui::TextDisabled("All selected items will be combined into one encrypted file");
-
-            if (selectedLockOption == 1)
-            {
-                ImGui::Spacing();
-                ImGui::Text("Combined file name:");
-                ImGui::SetNextItemWidth(-1);
-                ImGui::InputTextWithHint("##combinedName", "Enter name (without .safe)", combinedNameBuffer, sizeof(combinedNameBuffer));
-            }
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputTextWithHint("##password", "Password", passwordBuffer, PASSWORD_BUFFER_SIZE, ImGuiInputTextFlags_Password);
 
             ImGui::Spacing();
             ImGui::Separator();
@@ -567,65 +1136,15 @@ namespace safe::ui
 
             if (ImGui::Button("OK", ImVec2(buttonWidth, 0)))
             {
-                bool canProceed = true;
-
-                if (selectedLockOption == 1)
-                {
-                    // Validate combined name
-                    if (strlen(combinedNameBuffer) == 0)
-                    {
-                        statusMessage = "Error: Please enter a name for the combined file";
-                        canProceed = false;
-                    }
-                }
-
-                if (canProceed)
-                {
-                    if (selectedLockOption == 0)
-                    {
-                        // Option 1: Lock individually
-                        for (const size_t idx : selectedIndices)
-                        {
-                            if (!IsValidIndex(idx)) continue;
-                            items[idx].isLocked = true;
-                        }
-                        statusMessage = "Locked selected items individually";
-                    }
-                    else
-                    {
-                        // Option 2: Combine into single .safe
-                        std::string combinedName = std::string(combinedNameBuffer) + ".safe";
-
-                        // Create new combined item
-                        Item combinedItem;
-                        combinedItem.name = combinedName;
-                        combinedItem.isFolder = false;
-                        combinedItem.isLocked = true;
-
-                        // Remove selected items (collect indices first to avoid iterator invalidation)
-                        std::vector<size_t> indicesToRemove(selectedIndices.begin(), selectedIndices.end());
-                        std::sort(indicesToRemove.rbegin(), indicesToRemove.rend()); // Sort descending
-
-                        for (const size_t idx : indicesToRemove)
-                        {
-                            if (IsValidIndex(idx))
-                            {
-                                items.erase(items.begin() + static_cast<std::ptrdiff_t>(idx));
-                            }
-                        }
-
-                        // Add combined item
-                        items.push_back(combinedItem);
-
-                        // Clear selection
-                        selectedIndices.clear();
-
-                        statusMessage = "Created combined safe file: " + combinedName;
-                    }
-
-                    showLockPopup = false;
-                    selectedLockOption = 0;
-                    combinedNameBuffer[0] = '\0';
+                if (passwordBuffer[0] == '\0') {
+                    statusMessage = "Password is required";
+                } else {
+                    const std::string password(passwordBuffer);
+                    const bool ok = passwordModeIsLock ? ApplyLockOperation(password) : ApplyUnlockOperation(password);
+                    statusMessage = ok
+                        ? (passwordModeIsLock ? "Locked selected item(s)" : "Unlocked selected item(s)")
+                        : (passwordModeIsLock ? "Lock failed for one or more items" : "Unlock failed: incorrect password or metadata error");
+                    showPasswordPopup = false;
                 }
             }
 
@@ -633,10 +1152,8 @@ namespace safe::ui
 
             if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0)))
             {
-                showLockPopup = false;
-                selectedLockOption = 0;
-                combinedNameBuffer[0] = '\0';
-                statusMessage = "Lock operation cancelled";
+                showPasswordPopup = false;
+                statusMessage = passwordModeIsLock ? "Lock cancelled" : "Unlock cancelled";
             }
 
             ImGui::EndPopup();
@@ -645,15 +1162,14 @@ namespace safe::ui
 
     static void PerformLockOperation()
     {
-        if (selectedIndices.empty())
+        if (selectedItemIds.empty())
         {
             statusMessage = "No items selected";
             return;
         }
 
-        // Check if any item is already locked
         bool anyLocked = false;
-        for (const size_t idx : selectedIndices)
+        for (const size_t idx : GetSelectedIndices())
         {
             if (!IsValidIndex(idx)) continue;
             if (items[idx].isLocked)
@@ -669,35 +1185,19 @@ namespace safe::ui
             return;
         }
 
-        // Single item: lock directly
-        if (selectedIndices.size() == 1)
-        {
-            const size_t idx = *selectedIndices.begin();
-            if (IsValidIndex(idx))
-            {
-                items[idx].isLocked = true;
-                statusMessage = "Locked selected item";
-            }
-        }
-        else
-        {
-            // Multiple items: show popup
-            showLockPopup = true;
-            ImGui::OpenPopup("Lock Options");
-        }
+        OpenPasswordPopup(true);
     }
 
     static void PerformUnlockOperation()
     {
-        if (selectedIndices.empty())
+        if (selectedItemIds.empty())
         {
             statusMessage = "No items selected";
             return;
         }
 
-        // Check if ALL selected items are locked
         bool allLocked = true;
-        for (const size_t idx : selectedIndices)
+        for (const size_t idx : GetSelectedIndices())
         {
             if (!IsValidIndex(idx)) continue;
             if (!items[idx].isLocked)
@@ -713,13 +1213,93 @@ namespace safe::ui
             return;
         }
 
-        // Unlock all selected items
-        for (const size_t idx : selectedIndices)
-        {
-            if (!IsValidIndex(idx)) continue;
-            items[idx].isLocked = false;
-        }
+        OpenPasswordPopup(false);
+    }
 
-        statusMessage = selectedIndices.size() == 1 ? "Unlocked selected item" : "Unlocked selected items";
+    static bool ApplyLockOperation(const std::string& password) {
+        bool allCoreOpsSucceeded = true;
+        bool anyChanged = false;
+        for (const size_t idx : GetSelectedIndices()) {
+            if (!IsValidIndex(idx)) {
+                allCoreOpsSucceeded = false;
+                continue;
+            }
+
+            std::vector<uint8_t> salt(PASSWORD_SALT_SIZE);
+            std::vector<uint8_t> verifier;
+            const bool verifierReady =
+                GenerateRandomBytes(salt) &&
+                DerivePasswordVerifier(password, salt, DB_DEFAULT_KDF_ITERATIONS, verifier);
+
+            core::Folder folder(items[idx].path);
+            if (!folder.Lock(password)) {
+                const std::wstring archivePath = items[idx].path + L".safe";
+                const bool archiveExists = core::Filesystem::FileExists(archivePath);
+                const bool plaintextExists =
+                    core::Filesystem::DirectoryExists(items[idx].path) ||
+                    core::Filesystem::FileExists(items[idx].path);
+                if (!(archiveExists && !plaintextExists)) {
+                    allCoreOpsSucceeded = false;
+                    continue;
+                }
+            }
+
+            items[idx].isLocked = true;
+            if (verifierReady) {
+                items[idx].passwordHash = BytesToHex(verifier);
+                items[idx].passwordSalt = BytesToHex(salt);
+            } else {
+                items[idx].passwordHash.clear();
+                items[idx].passwordSalt.clear();
+            }
+            items[idx].kdfIterations = DB_DEFAULT_KDF_ITERATIONS;
+            anyChanged = true;
+            UpsertPersistedState(items[idx]);
+        }
+        if (anyChanged && !openedRootPath.empty()) {
+            LoadItemsFromPath(openedRootPath);
+        }
+        return allCoreOpsSucceeded;
+    }
+
+    static bool ApplyUnlockOperation(const std::string& password) {
+        bool allCoreOpsSucceeded = true;
+        bool anyChanged = false;
+        for (const size_t idx : GetSelectedIndices()) {
+            if (!IsValidIndex(idx)) {
+                allCoreOpsSucceeded = false;
+                continue;
+            }
+
+            if (!items[idx].passwordHash.empty() && !items[idx].passwordSalt.empty()) {
+                std::vector<uint8_t> salt;
+                std::vector<uint8_t> storedVerifier;
+                if (HexToBytes(items[idx].passwordSalt, salt) && HexToBytes(items[idx].passwordHash, storedVerifier) &&
+                    !salt.empty() && !storedVerifier.empty()) {
+                    std::vector<uint8_t> computedVerifier;
+                    const int iterations = items[idx].kdfIterations > 0 ? items[idx].kdfIterations : DB_DEFAULT_KDF_ITERATIONS;
+                    if (!DerivePasswordVerifier(password, salt, iterations, computedVerifier) || !ConstantTimeEqual(storedVerifier, computedVerifier)) {
+                        allCoreOpsSucceeded = false;
+                        continue;
+                    }
+                }
+            }
+
+            core::Folder folder(items[idx].path);
+            if (!folder.Unlock(password)) {
+                allCoreOpsSucceeded = false;
+                continue;
+            }
+
+            items[idx].isLocked = false;
+            items[idx].passwordHash.clear();
+            items[idx].passwordSalt.clear();
+            anyChanged = true;
+            UpsertPersistedState(items[idx]);
+        }
+        if (anyChanged && !openedRootPath.empty()) {
+            LoadItemsFromPath(openedRootPath);
+        }
+        return allCoreOpsSucceeded;
     }
 }
