@@ -28,6 +28,15 @@
 12. Updated UI highlight colors:
     - Selected is medium blue
     - Hover is lighter than selected
+13. Password popup UX updates:
+    - Slightly increased modal height for better spacing
+    - Multi-select unlock keeps a stable target set for retries (no need to close/reopen popup)
+    - Unlock feedback now distinguishes:
+      - full mismatch: **"Wrong password. Please try again."**
+      - partial match in multi-select: **"Some selected items need a different password."**
+14. Inno Setup script updated to package from release output using lowercase executable name:
+    - Source/output defaults point to `release-build`
+    - Installer app target references `safe.exe`
 
 ### Not implemented yet
 1. Advanced key-management lifecycle (recovery/rotation/credential reset).
@@ -91,6 +100,10 @@
 5. Mixed locked/unlocked targets disable both actions.
 6. Lock/Unlock requires password confirmation and updates SQLite metadata.
 7. Selection uses stable IDs and survives index reordering safely.
+8. In unlock retry flow, already-unlocked items are ignored on later attempts in the same popup session.
+9. Unlock message rule:
+   - if this attempt unlocks none -> show wrong password
+   - if this attempt unlocks some but not all remaining locked targets -> show different-password message
 
 ---
 

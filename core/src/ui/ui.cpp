@@ -90,6 +90,8 @@ namespace safe::ui
     static bool passwordInputNeedsFocus = false;
     static double passwordRevealUntil = 0.0;
     static std::string passwordPopupError;
+    static std::vector<std::string> passwordPopupTargetItemIds;
+    static std::string unlockPasswordMismatchMessage;
 
     static sqlite3* g_db = nullptr;
 
@@ -130,6 +132,7 @@ namespace safe::ui
     static void ResetSelection();
     static std::vector<size_t> GetSelectedIndices();
     static std::vector<size_t> GetOperationIndices();
+    static std::vector<size_t> ResolveIndicesForItemIds(const std::vector<std::string>& itemIds);
     static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter);
     static void OpenPasswordPopup(bool forLockOperation);
 
@@ -812,6 +815,20 @@ namespace safe::ui
         return {};
     }
 
+    static std::vector<size_t> ResolveIndicesForItemIds(const std::vector<std::string>& itemIds) {
+        std::vector<size_t> indices;
+        indices.reserve(itemIds.size());
+        for (const std::string& id : itemIds) {
+            for (size_t i = 0; i < items.size(); ++i) {
+                if (items[i].id == id) {
+                    indices.push_back(i);
+                    break;
+                }
+            }
+        }
+        return indices;
+    }
+
     static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter) {
         if (!hasSearchFilter) return true;
         return ToLower(item.name).find(lowerSearchText) != std::string::npos;
@@ -821,8 +838,15 @@ namespace safe::ui
         passwordModeIsLock = forLockOperation;
         passwordBuffer[0] = '\0';
         passwordPopupError.clear();
+        unlockPasswordMismatchMessage.clear();
         passwordInputNeedsFocus = true;
         passwordRevealUntil = 0.0;
+        passwordPopupTargetItemIds.clear();
+        for (const size_t idx : GetOperationIndices()) {
+            if (IsValidIndex(idx)) {
+                passwordPopupTargetItemIds.push_back(items[idx].id);
+            }
+        }
         showPasswordPopup = true;
         passwordPopupNeedsOpen = true;
     }
@@ -1153,15 +1177,18 @@ namespace safe::ui
 
     static void RenderPasswordPopup()
     {
-        if (!showPasswordPopup)
+        if (!showPasswordPopup) {
+            passwordPopupTargetItemIds.clear();
+            unlockPasswordMismatchMessage.clear();
             return;
+        }
 
         const char* popupTitle = passwordModeIsLock ? "Lock Password" : "Unlock Password";
         if (passwordPopupNeedsOpen) {
             ImGui::OpenPopup(popupTitle);
             passwordPopupNeedsOpen = false;
         }
-        ImGui::SetNextWindowSize(ImVec2(460, 156), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(460, 182), ImGuiCond_Appearing);
 
         if (ImGui::BeginPopupModal(popupTitle, &showPasswordPopup, ImGuiWindowFlags_NoResize))
         {
@@ -1228,13 +1255,17 @@ namespace safe::ui
                         statusMessage = passwordModeIsLock ? "Locked selected item(s)" : "Unlocked selected item(s)";
                         showPasswordPopup = false;
                         passwordPopupNeedsOpen = false;
+                        passwordPopupTargetItemIds.clear();
+                        unlockPasswordMismatchMessage.clear();
                         passwordRevealUntil = 0.0;
                     } else if (!passwordModeIsLock) {
                         passwordBuffer[0] = '\0';
-                        passwordPopupError = "Wrong password. Please try again.";
+                        passwordPopupError = unlockPasswordMismatchMessage.empty()
+                            ? "Wrong password. Please try again."
+                            : unlockPasswordMismatchMessage;
                         passwordInputNeedsFocus = true;
                         passwordRevealUntil = 0.0;
-                        statusMessage = "Wrong password. Please try again.";
+                        statusMessage = passwordPopupError;
                     } else {
                         passwordPopupError = "Lock failed for one or more items";
                         passwordRevealUntil = 0.0;
@@ -1249,6 +1280,8 @@ namespace safe::ui
             {
                 showPasswordPopup = false;
                 passwordPopupNeedsOpen = false;
+                passwordPopupTargetItemIds.clear();
+                unlockPasswordMismatchMessage.clear();
                 passwordPopupError.clear();
                 passwordInputNeedsFocus = false;
                 passwordRevealUntil = 0.0;
@@ -1320,9 +1353,15 @@ namespace safe::ui
     }
 
     static bool ApplyLockOperation(const std::string& password) {
+        const std::vector<size_t> targetIndices = passwordPopupTargetItemIds.empty()
+            ? GetOperationIndices()
+            : ResolveIndicesForItemIds(passwordPopupTargetItemIds);
+        if (targetIndices.empty()) {
+            return false;
+        }
         bool allCoreOpsSucceeded = true;
         bool anyChanged = false;
-        for (const size_t idx : GetOperationIndices()) {
+        for (const size_t idx : targetIndices) {
             if (!IsValidIndex(idx)) {
                 allCoreOpsSucceeded = false;
                 continue;
@@ -1366,11 +1405,25 @@ namespace safe::ui
     }
 
     static bool ApplyUnlockOperation(const std::string& password) {
+        const std::vector<size_t> targetIndices = passwordPopupTargetItemIds.empty()
+            ? GetOperationIndices()
+            : ResolveIndicesForItemIds(passwordPopupTargetItemIds);
+        if (targetIndices.empty()) {
+            return false;
+        }
+        unlockPasswordMismatchMessage.clear();
         bool allCoreOpsSucceeded = true;
         bool anyChanged = false;
-        for (const size_t idx : GetOperationIndices()) {
+        bool hasPasswordMismatch = false;
+        bool anyUnlockedThisAttempt = false;
+        for (const size_t idx : targetIndices) {
             if (!IsValidIndex(idx)) {
                 allCoreOpsSucceeded = false;
+                continue;
+            }
+
+            // Skip items that are already unlocked from prior attempts in the same popup session.
+            if (!items[idx].isLocked) {
                 continue;
             }
 
@@ -1398,6 +1451,7 @@ namespace safe::ui
                     core::Filesystem::FileExists(items[idx].path);
                 if (archiveExists || !plaintextExists) {
                     allCoreOpsSucceeded = false;
+                    hasPasswordMismatch = true;
                     continue;
                 }
             }
@@ -1406,10 +1460,14 @@ namespace safe::ui
             items[idx].passwordHash.clear();
             items[idx].passwordSalt.clear();
             anyChanged = true;
+            anyUnlockedThisAttempt = true;
             UpsertPersistedState(items[idx]);
         }
         if (anyChanged && !openedRootPath.empty()) {
             LoadItemsFromPath(openedRootPath);
+        }
+        if (!allCoreOpsSucceeded && hasPasswordMismatch && anyUnlockedThisAttempt) {
+            unlockPasswordMismatchMessage = "Some selected items need a different password.";
         }
         return allCoreOpsSucceeded;
     }

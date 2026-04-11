@@ -3,11 +3,11 @@
 #endif
 
 #ifndef SourceDir
-  #define SourceDir "..\..\debug-build\Release"
+  #define SourceDir "..\..\release-build"
 #endif
 
 #ifndef OutputDir
-  #define OutputDir "..\..\debug-build\installer"
+  #define OutputDir "..\..\release-build\installer"
 #endif
 
 [Setup]
@@ -19,7 +19,6 @@ DefaultDirName={localappdata}\Programs\Safe
 DefaultGroupName=Safe
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=none
 UninstallDisplayName=Safe
 UninstallDisplayIcon={app}\Safe.exe
 OutputDir={#OutputDir}
