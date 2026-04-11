@@ -21,13 +21,13 @@
 8. Last opened root path persistence and auto-restore at app startup
 9. Migration-safe SQLite schema versioning via `PRAGMA user_version` (v1->v5 path)
 10. Real item lock/unlock pipeline (files + folders):
-   - Selected content is serialized and encrypted into `.safe` archives
-   - Unlock decrypts and restores original file/folder content
-   - Archive format uses PBKDF2(SHA-256) + AES-256-CBC
+    - Selected content is serialized and encrypted into `.safe` archives
+    - Unlock decrypts and restores original file/folder content
+    - Archive format uses PBKDF2(SHA-256) + AES-256-CBC
 11. Password-gated lock/unlock flow via modal popup
 12. Updated UI highlight colors:
-   - Selected is medium blue
-   - Hover is lighter than selected
+    - Selected is medium blue
+    - Hover is lighter than selected
 
 ### Not implemented yet
 1. Advanced key-management lifecycle (recovery/rotation/credential reset).
@@ -116,6 +116,6 @@
 Development included AI-assisted implementation and cleanup support with:
 1. **ChatGPT (GPT-5.3-Codex)**
 2. **GitHub Copilot**
-13. Unlock reliability fixes:
+3. Unlock reliability fixes:
    - Successful decrypt/restore is treated as success even if archive cleanup fails
    - Plaintext entries are preferred over stale `.safe` entries when both exist

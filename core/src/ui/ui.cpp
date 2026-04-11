@@ -87,6 +87,9 @@ namespace safe::ui
     static bool passwordPopupNeedsOpen = false;
     static bool passwordModeIsLock = true;
     static char passwordBuffer[PASSWORD_BUFFER_SIZE] = "";
+    static bool passwordInputNeedsFocus = false;
+    static double passwordRevealUntil = 0.0;
+    static std::string passwordPopupError;
 
     static sqlite3* g_db = nullptr;
 
@@ -817,6 +820,9 @@ namespace safe::ui
     static void OpenPasswordPopup(bool forLockOperation) {
         passwordModeIsLock = forLockOperation;
         passwordBuffer[0] = '\0';
+        passwordPopupError.clear();
+        passwordInputNeedsFocus = true;
+        passwordRevealUntil = 0.0;
         showPasswordPopup = true;
         passwordPopupNeedsOpen = true;
     }
@@ -1006,8 +1012,6 @@ namespace safe::ui
     {
         const bool hasSearchFilter = searchBuffer[0] != '\0';
         const std::string lowerSearchText = hasSearchFilter ? ToLower(searchBuffer) : "";
-        const bool shiftDown = ImGui::GetIO().KeyShift;
-        const bool ctrlDown = ImGui::GetIO().KeyCtrl;
 
         for (size_t i = 0; i < items.size(); i++)
         {
@@ -1026,6 +1030,8 @@ namespace safe::ui
             if (clicked)
             {
                 focusedItemId = item.id;
+                const bool shiftDown = ImGui::GetIO().KeyShift || ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+                const bool ctrlDown = ImGui::GetIO().KeyCtrl || ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
 
                 if (shiftDown)
                 {
@@ -1155,39 +1161,85 @@ namespace safe::ui
             ImGui::OpenPopup(popupTitle);
             passwordPopupNeedsOpen = false;
         }
-        ImGui::SetNextWindowSize(ImVec2(460, 180), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(460, 156), ImGuiCond_Appearing);
 
-        if (ImGui::BeginPopupModal(popupTitle, &showPasswordPopup, ImGuiWindowFlags_AlwaysAutoResize))
+        if (ImGui::BeginPopupModal(popupTitle, &showPasswordPopup, ImGuiWindowFlags_NoResize))
         {
-            ImGui::TextWrapped(passwordModeIsLock
-                ? "Enter a password to lock the selected items."
-                : "Enter the password to unlock the selected items.");
-            ImGui::Spacing();
-            ImGui::SetNextItemWidth(-1);
-            ImGui::InputTextWithHint("##password", "Password", passwordBuffer, PASSWORD_BUFFER_SIZE, ImGuiInputTextFlags_Password);
+            ImGui::PushStyleColor(ImGuiCol_NavHighlight, ImVec4(0, 0, 0, 0));
+            const float contentStartX = ImGui::GetCursorPosX();
+            const float contentWidth = std::max(120.0f, ImGui::GetContentRegionAvail().x);
+            const float contentRightX = contentStartX + contentWidth;
 
+            ImGui::SetCursorPosX(contentStartX);
+            ImGui::PushTextWrapPos(contentRightX);
+            ImGui::TextUnformatted("Enter password for the selected items.");
+            ImGui::TextDisabled(passwordModeIsLock ? "Mode: Lock" : "Mode: Unlock");
+            ImGui::PopTextWrapPos();
             ImGui::Spacing();
+            ImGui::SetCursorPosX(contentStartX);
+            const float rowSpacing = ImGui::GetStyle().ItemSpacing.x;
+            constexpr float toggleButtonWidth = 72.0f;
+            const float inputWidth = std::max(80.0f, contentWidth - toggleButtonWidth - rowSpacing);
+            ImGui::SetNextItemWidth(inputWidth);
+            if (passwordInputNeedsFocus) {
+                ImGui::SetKeyboardFocusHere();
+                passwordInputNeedsFocus = false;
+            }
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 9.0f));
+            const bool passwordVisible = ImGui::GetTime() < passwordRevealUntil;
+            const ImGuiInputTextFlags passwordFlags =
+                (passwordVisible ? ImGuiInputTextFlags_None : ImGuiInputTextFlags_Password) |
+                ImGuiInputTextFlags_EnterReturnsTrue;
+            const bool submittedWithEnter = ImGui::InputTextWithHint("##password", "Password", passwordBuffer, PASSWORD_BUFFER_SIZE, passwordFlags);
+            ImGui::SameLine(0.0f, rowSpacing);
+            if (ImGui::Button("Show##toggle-password", ImVec2(toggleButtonWidth, 0.0f))) {
+                passwordRevealUntil = ImGui::GetTime() + 0.3;
+                passwordInputNeedsFocus = true;
+            }
+            ImGui::PopStyleVar();
+            ImGui::SetCursorPosX(contentStartX);
+            if (!passwordPopupError.empty()) {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.85f, 0.20f, 0.20f, 1.0f), "%s", passwordPopupError.c_str());
+            }
+            ImGui::Spacing();
+            ImGui::SetCursorPosX(contentStartX);
             ImGui::Separator();
             ImGui::Spacing();
 
             // Buttons
-            constexpr float buttonWidth = 100.0f;
             const float spacing = ImGui::GetStyle().ItemSpacing.x;
+            const float buttonWidth = (contentWidth - spacing) * 0.5f;
             const float totalWidth = (buttonWidth * 2) + spacing;
-            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - totalWidth) * 0.5f);
+            ImGui::SetCursorPosX(contentStartX + ((contentWidth - totalWidth) * 0.5f));
 
-            if (ImGui::Button("OK", ImVec2(buttonWidth, 0)))
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 9.0f));
+            const bool submitClicked = ImGui::Button("OK", ImVec2(buttonWidth, 0));
+            if (submitClicked || submittedWithEnter)
             {
                 if (passwordBuffer[0] == '\0') {
                     statusMessage = "Password is required";
+                    passwordPopupError = "Password is required";
+                    passwordInputNeedsFocus = true;
                 } else {
                     const std::string password(passwordBuffer);
-                    const bool ok = passwordModeIsLock ? ApplyLockOperation(password) : ApplyUnlockOperation(password);
-                    statusMessage = ok
-                        ? (passwordModeIsLock ? "Locked selected item(s)" : "Unlocked selected item(s)")
-                        : (passwordModeIsLock ? "Lock failed for one or more items" : "Unlock failed: incorrect password or metadata error");
-                    showPasswordPopup = false;
-                    passwordPopupNeedsOpen = false;
+                    if (const bool ok = passwordModeIsLock ? ApplyLockOperation(password) : ApplyUnlockOperation(password); ok) {
+                        passwordPopupError.clear();
+                        statusMessage = passwordModeIsLock ? "Locked selected item(s)" : "Unlocked selected item(s)";
+                        showPasswordPopup = false;
+                        passwordPopupNeedsOpen = false;
+                        passwordRevealUntil = 0.0;
+                    } else if (!passwordModeIsLock) {
+                        passwordBuffer[0] = '\0';
+                        passwordPopupError = "Wrong password. Please try again.";
+                        passwordInputNeedsFocus = true;
+                        passwordRevealUntil = 0.0;
+                        statusMessage = "Wrong password. Please try again.";
+                    } else {
+                        passwordPopupError = "Lock failed for one or more items";
+                        passwordRevealUntil = 0.0;
+                        statusMessage = "Lock failed for one or more items";
+                    }
                 }
             }
 
@@ -1197,9 +1249,14 @@ namespace safe::ui
             {
                 showPasswordPopup = false;
                 passwordPopupNeedsOpen = false;
+                passwordPopupError.clear();
+                passwordInputNeedsFocus = false;
+                passwordRevealUntil = 0.0;
                 statusMessage = passwordModeIsLock ? "Lock cancelled" : "Unlock cancelled";
             }
+            ImGui::PopStyleVar();
 
+            ImGui::PopStyleColor();
             ImGui::EndPopup();
         }
     }
