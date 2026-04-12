@@ -22,6 +22,7 @@ This folder contains the Windows installer script for Safe:
 3. Optionally launches Safe after install
 4. Adds `{app}` to the current user's PATH
 5. On uninstall, removes PATH entry and preserves `.safe` archives
+6. Uninstall prompts whether to also remove `%LOCALAPPDATA%\Safe` user data (including `safe.db`)
 
 ## Build reminder
 

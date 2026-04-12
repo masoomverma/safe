@@ -43,6 +43,9 @@ Name: "{userprograms}\Safe"; Filename: "{app}\Safe.exe"
 Filename: "{app}\Safe.exe"; Description: "Launch Safe"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  RemoveUserDataOnUninstall: Boolean;
+
 function ContainsPathToken(PathValue: string; PathToken: string): Boolean;
 begin
   Result := Pos(';' + Uppercase(PathToken) + ';', ';' + Uppercase(PathValue) + ';') > 0;
@@ -114,6 +117,39 @@ begin
   end;
 end;
 
+procedure RemoveDirectoryTree(DirPath: string);
+var
+  FindRec: TFindRec;
+  EntryPath: string;
+  IsDir: Boolean;
+begin
+  if not DirExists(DirPath) then
+    exit;
+
+  if FindFirst(AddBackslash(DirPath) + '*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          EntryPath := AddBackslash(DirPath) + FindRec.Name;
+          IsDir := (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0;
+
+          if IsDir then
+            RemoveDirectoryTree(EntryPath)
+          else
+            DeleteFile(EntryPath);
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+
+  if IsDirectoryEmpty(DirPath) then
+    RemoveDir(DirPath);
+end;
+
 procedure AddToUserPath(PathToken: string);
 var
   OrigPath: string;
@@ -162,11 +198,29 @@ begin
     AddToUserPath(ExpandConstant('{app}'));
 end;
 
+function InitializeUninstall(): Boolean;
+var
+  UserDataPath: string;
+begin
+  UserDataPath := ExpandConstant('{localappdata}\Safe');
+  RemoveUserDataOnUninstall :=
+    MsgBox(
+      'Do you also want to remove all Safe user data (including safe.db)?' + #13#10 +
+      UserDataPath + #13#10#13#10 +
+      'Select No to keep your data.',
+      mbConfirmation,
+      MB_YESNO or MB_DEFBUTTON2
+    ) = IDYES;
+  Result := True;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   AppPath: string;
+  UserDataPath: string;
 begin
   AppPath := ExpandConstant('{app}');
+  UserDataPath := ExpandConstant('{localappdata}\Safe');
 
   if CurUninstallStep = usUninstall then
     RemoveFromUserPath(AppPath)
@@ -175,5 +229,7 @@ begin
     RemoveInstalledContentPreservingSafe(AppPath);
     if DirExists(AppPath) and IsDirectoryEmpty(AppPath) then
       RemoveDir(AppPath);
+    if RemoveUserDataOnUninstall then
+      RemoveDirectoryTree(UserDataPath);
   end;
 end;

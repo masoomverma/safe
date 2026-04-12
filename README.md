@@ -79,3 +79,4 @@ This installer is explicitly **per-user only** (`PrivilegesRequired=lowest`) and
 - It also appends the installation directory to the current user's `PATH`.
 - Uninstall removes the same user `PATH` entry automatically.
 - Uninstall removes installed app content but preserves any `.safe` archived files/folders.
+- Uninstall prompts whether to also remove `%LOCALAPPDATA%\Safe` user data (including `safe.db`).
