@@ -92,6 +92,9 @@ namespace safe::ui
     static std::string passwordPopupError;
     static std::vector<std::string> passwordPopupTargetItemIds;
     static std::string unlockPasswordMismatchMessage;
+    static std::string openedRootSignature;
+    static double lastAutoRefreshAtSeconds = 0.0;
+    constexpr double AUTO_REFRESH_INTERVAL_SECONDS = 1.0;
 
     static sqlite3* g_db = nullptr;
 
@@ -135,6 +138,7 @@ namespace safe::ui
     static std::vector<size_t> ResolveIndicesForItemIds(const std::vector<std::string>& itemIds);
     static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter);
     static void OpenPasswordPopup(bool forLockOperation);
+    static void ClosePasswordPopupAsCancelled();
 
     static void RenderMainLayout();
     static void RenderTopBar();
@@ -147,6 +151,8 @@ namespace safe::ui
     static void PerformUnlockOperation();
     static bool ApplyLockOperation(const std::string& password);
     static bool ApplyUnlockOperation(const std::string& password);
+    static std::string BuildRootSnapshotSignature(const std::wstring& rootPath);
+    static void TryAutoRefreshOpenedRoot();
 
     bool UI::s_initialized = false;
 
@@ -163,10 +169,6 @@ namespace safe::ui
         }
 
         if (!loaded) {
-            loaded = LoadItemsFromPath(core::Filesystem::GetExecutablePath());
-        }
-
-        if (!loaded) {
             statusMessage = "Open a folder to start";
         }
         s_initialized = true;
@@ -177,6 +179,7 @@ namespace safe::ui
         if (!s_initialized) {
             return;
         }
+        TryAutoRefreshOpenedRoot();
         RenderMainLayout();
     }
 
@@ -184,6 +187,8 @@ namespace safe::ui
         s_initialized = false;
         ResetSelection();
         items.clear();
+        openedRootSignature.clear();
+        lastAutoRefreshAtSeconds = 0.0;
         ShutdownPersistence();
     }
 
@@ -362,6 +367,52 @@ namespace safe::ui
     static std::wstring StripSafeArchiveExtension(const std::wstring& archivePath) {
         if (!HasSafeArchiveExtension(archivePath)) return archivePath;
         return archivePath.substr(0, archivePath.size() - 5);
+    }
+
+    static std::string BuildRootSnapshotSignature(const std::wstring& rootPath) {
+        if (rootPath.empty() || !core::Filesystem::DirectoryExists(rootPath)) {
+            return {};
+        }
+
+        std::vector<std::string> entries;
+        const auto directories = core::Filesystem::ListDirectories(rootPath);
+        const auto files = core::Filesystem::ListFiles(rootPath);
+        const auto archives = ListSafeArchives(rootPath);
+        entries.reserve(directories.size() + files.size() + archives.size());
+
+        for (const auto& directoryPath : directories) {
+            entries.push_back(
+                "D|" + WideToUtf8(directoryPath) + "|" +
+                std::to_string(core::Filesystem::GetLastModifiedTime(directoryPath))
+            );
+        }
+
+        for (const auto& filePath : files) {
+            if (HasSafeArchiveExtension(filePath)) {
+                continue;
+            }
+            entries.push_back(
+                "F|" + WideToUtf8(filePath) + "|" +
+                std::to_string(core::Filesystem::GetLastModifiedTime(filePath)) + "|" +
+                std::to_string(core::Filesystem::GetFileSize(filePath))
+            );
+        }
+
+        for (const auto& archivePath : archives) {
+            const std::wstring logicalPath = StripSafeArchiveExtension(archivePath);
+            entries.push_back(
+                "A|" + WideToUtf8(logicalPath) + "|" +
+                std::to_string(core::Filesystem::GetLastModifiedTime(archivePath)) + "|" +
+                std::to_string(core::Filesystem::GetFileSize(archivePath))
+            );
+        }
+
+        std::ranges::sort(entries);
+        std::ostringstream joined;
+        for (const auto& entry : entries) {
+            joined << entry << '\n';
+        }
+        return HashString(joined.str());
     }
 
     static bool IsValidIndex(size_t index) {
@@ -767,6 +818,8 @@ namespace safe::ui
         std::ranges::sort(loaded, [](const Item& a, const Item& b) { return a.name < b.name; });
         items = std::move(loaded);
         openedRootPath = rootPath;
+        openedRootSignature = BuildRootSnapshotSignature(rootPath);
+        lastAutoRefreshAtSeconds = ImGui::GetTime();
         ResetSelection();
 
         for (const Item& item : items) {
@@ -776,6 +829,34 @@ namespace safe::ui
         statusMessage = "Loaded " + std::to_string(items.size()) + " item(s)";
         SaveLastOpenedRootPath(rootPath);
         return true;
+    }
+
+    static void TryAutoRefreshOpenedRoot() {
+        if (openedRootPath.empty() || showPasswordPopup) {
+            return;
+        }
+
+        const double now = ImGui::GetTime();
+        if (now - lastAutoRefreshAtSeconds < AUTO_REFRESH_INTERVAL_SECONDS) {
+            return;
+        }
+        lastAutoRefreshAtSeconds = now;
+
+        const std::string latestSignature = BuildRootSnapshotSignature(openedRootPath);
+        if (latestSignature.empty()) {
+            return;
+        }
+        if (openedRootSignature.empty()) {
+            openedRootSignature = latestSignature;
+            return;
+        }
+        if (latestSignature == openedRootSignature) {
+            return;
+        }
+
+        if (LoadItemsFromPath(openedRootPath)) {
+            statusMessage = "Detected filesystem changes and refreshed items";
+        }
     }
 
     static void ResetSelection() {
@@ -851,6 +932,18 @@ namespace safe::ui
         passwordPopupNeedsOpen = true;
     }
 
+    static void ClosePasswordPopupAsCancelled() {
+        showPasswordPopup = false;
+        passwordPopupNeedsOpen = false;
+        passwordPopupTargetItemIds.clear();
+        unlockPasswordMismatchMessage.clear();
+        passwordPopupError.clear();
+        passwordInputNeedsFocus = false;
+        passwordRevealUntil = 0.0;
+        statusMessage = passwordModeIsLock ? "Lock cancelled" : "Unlock cancelled";
+        ImGui::CloseCurrentPopup();
+    }
+
     static void RenderMainLayout()
     {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -901,7 +994,7 @@ namespace safe::ui
         if (!openedRootPath.empty()) {
             ImGui::Text("Root: %s", WideToUtf8(openedRootPath).c_str());
         } else {
-            ImGui::TextDisabled("Root: --");
+            ImGui::TextDisabled("Root: None");
         }
         ImGui::EndChild();
 
@@ -1192,6 +1285,7 @@ namespace safe::ui
 
         if (ImGui::BeginPopupModal(popupTitle, &showPasswordPopup, ImGuiWindowFlags_NoResize))
         {
+            const bool cancelPressed = ImGui::IsKeyPressed(ImGuiKey_Escape);
             ImGui::PushStyleColor(ImGuiCol_NavHighlight, ImVec4(0, 0, 0, 0));
             const float contentStartX = ImGui::GetCursorPosX();
             const float contentWidth = std::max(120.0f, ImGui::GetContentRegionAvail().x);
@@ -1276,16 +1370,9 @@ namespace safe::ui
 
             ImGui::SameLine();
 
-            if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0)))
+            if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0)) || cancelPressed)
             {
-                showPasswordPopup = false;
-                passwordPopupNeedsOpen = false;
-                passwordPopupTargetItemIds.clear();
-                unlockPasswordMismatchMessage.clear();
-                passwordPopupError.clear();
-                passwordInputNeedsFocus = false;
-                passwordRevealUntil = 0.0;
-                statusMessage = passwordModeIsLock ? "Lock cancelled" : "Unlock cancelled";
+                ClosePasswordPopupAsCancelled();
             }
             ImGui::PopStyleVar();
 

@@ -6,6 +6,7 @@
 2. Click **Open** in the top bar.
 3. Select a root folder from the system folder picker.
 4. The sidebar is populated from real filesystem folders and files in the selected root.
+5. While that root stays open, new/removed/renamed items are auto-refreshed live.
 
 ## 2. Select items
 
@@ -26,6 +27,7 @@
 2. Click **Lock**.
 3. Enter a password in the lock popup.
 4. The selected item (file or folder) is packed and encrypted into a `.safe` archive, and the original item is removed.
+5. Press **Esc** to close the lock password popup.
 
 ## 4. Unlock
 
@@ -33,6 +35,7 @@
 2. Click **Unlock**.
 3. Enter the same password used to lock.
 4. The `.safe` archive is decrypted and the original file/folder content is restored to disk.
+5. Press **Esc** to close the unlock password popup.
 
 ## 5. Search
 

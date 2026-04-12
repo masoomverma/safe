@@ -58,6 +58,3 @@ docs/
 # Keep important files
 !CMakeLists.txt
 !README.md
-
-# Windows specific
-nul
