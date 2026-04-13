@@ -276,7 +276,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         0, wc.lpszClassName, L"Safe",
         WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT,
-        750, 550,
+        900, 660,
         nullptr, nullptr, hInstance, nullptr
     );
 
@@ -325,6 +325,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     imgui_style.WindowBorderSize = 0.0f;
     imgui_style.ChildBorderSize = 1.0f;  // Enable child window borders
     imgui_style.FrameBorderSize = 1.0f;
+    imgui_style.WindowPadding = ImVec2(12.0f, 10.0f);
+    imgui_style.FramePadding = ImVec2(10.0f, 6.0f);
+    imgui_style.ItemSpacing = ImVec2(10.0f, 8.0f);
 
     ImVec4* colors = imgui_style.Colors;
     colors[ImGuiCol_WindowBg] = ImVec4(0.94f, 0.94f, 0.96f, 1.0f);

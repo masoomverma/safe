@@ -75,6 +75,16 @@ else()
     target_compile_options(Safe PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Ensure runtime font path exists next to Safe.exe.
+add_custom_command(TARGET Safe POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:Safe>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/assets/fonts/Inter_24pt-Regular.ttf"
+        "$<TARGET_FILE_DIR:Safe>/assets/fonts/Inter-Regular.ttf"
+    COMMENT "Copying Inter font to output assets/fonts"
+)
+
 # Unicode / Win32 subsystem defines
 target_compile_definitions(Safe PRIVATE
     UNICODE
@@ -97,7 +107,7 @@ if(ISCC_EXECUTABLE)
     )
 endif()
 
-# ── Post-build: copy OpenSSL DLLs when present ────────────────────────────────
+# OpenSSL DLLs
 set(OPENSSL_DLL_DIR "${CMAKE_SOURCE_DIR}/build" CACHE PATH "Directory containing OpenSSL runtime DLLs")
 if(EXISTS "${OPENSSL_DLL_DIR}")
     file(GLOB OPENSSL_DLLS

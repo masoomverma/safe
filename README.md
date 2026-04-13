@@ -58,12 +58,12 @@
 
 ## 8. Safe UI 
 
-![Safe UI](assets/icons/Safe_UI.png)
+![Safe UI](assets/icons/SafeUI/Safe.png)
 
 ### - Lock/Unlock
 
-![Lock](assets/icons/Lock.png)
-![Lock](assets/icons/Unlock.png)
+![Lock](assets/icons/SafeUI/Lock.png)
+![Unlock](assets/icons/SafeUI/Unlock.png)
 
 ## 9. Build user-level installer.exe
 

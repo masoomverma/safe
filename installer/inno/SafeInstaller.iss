@@ -16,11 +16,8 @@ AppName=Safe
 AppVersion={#AppVersion}
 AppPublisher=Safe Project
 DefaultDirName={localappdata}\Programs\Safe
-DefaultGroupName=Safe
-DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 UninstallDisplayName=Safe
-UninstallDisplayIcon={app}\Safe.exe
 OutputDir={#OutputDir}
 OutputBaseFilename=Safe
 Compression=lzma2
@@ -34,10 +31,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#SourceDir}\Safe.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
-
-[Icons]
-Name: "{userprograms}\Safe"; Filename: "{app}\Safe.exe"
+Source: "..\..\assets\fonts\Inter_24pt-Regular.ttf"; DestDir: "{app}\assets\fonts"; DestName: "Inter-Regular.ttf"; Flags: ignoreversion
 
 [Run]
 Filename: "{app}\Safe.exe"; Description: "Launch Safe"; Flags: nowait postinstall skipifsilent

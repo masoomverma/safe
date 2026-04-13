@@ -26,6 +26,7 @@
 #include <string>
 #include <algorithm>
 #include <cstdint>
+#include <cctype>
 #include <ctime>
 #include <sstream>
 #include <iomanip>
@@ -34,14 +35,20 @@
 namespace safe::ui
 {
     namespace {
-        constexpr float TOPBAR_HEIGHT = 41.0f;
-        constexpr float ROOTPATHBAR_HEIGHT = 28.0f;
+        constexpr float TOPBAR_HEIGHT = 45.0f;
+        constexpr float ROOTPATHBAR_HEIGHT = 30.0f;
         constexpr float STATUSBAR_HEIGHT = 30.0f;
-        constexpr float SIDEBAR_WIDTH = 200.0f;
+        constexpr float SIDEBAR_WIDTH = 240.0f;
+        constexpr float CHILD_GAP = 6.0f;
         constexpr float BUTTON_WIDTH = 80.0f;
         constexpr float SELECT_BUTTON_WIDTH = 90.0f;
         constexpr float BUTTON_SPACING = 10.0f;
+        constexpr float PANEL_PADDING_X = 12.0f;
+        constexpr float PANEL_PADDING_Y = 10.0f;
+        constexpr float BAR_PADDING_Y = 6.5f;
         constexpr float SEARCH_WIDTH = 220.0f;
+        constexpr float PASSWORD_POPUP_WIDTH = 590.0f;
+        constexpr float PASSWORD_POPUP_HEIGHT = 260.0f;
         constexpr size_t SEARCH_BUFFER_SIZE = 128;
         constexpr size_t PASSWORD_BUFFER_SIZE = 128;
         constexpr int DB_SCHEMA_VERSION = 5;
@@ -49,6 +56,8 @@ namespace safe::ui
         constexpr int DB_DEFAULT_KDF_ITERATIONS = 120000;
         constexpr size_t PASSWORD_SALT_SIZE = 16;
         constexpr size_t PASSWORD_VERIFIER_SIZE = 32;
+        constexpr float MAIN_UI_FONT_SIZE = 18.0f;
+        constexpr float TITLE_UI_FONT_SIZE = 20.0f;
     }
 
     struct Item {
@@ -97,6 +106,8 @@ namespace safe::ui
     constexpr double AUTO_REFRESH_INTERVAL_SECONDS = 1.0;
 
     static sqlite3* g_db = nullptr;
+    static ImFont* g_mainUiFont = nullptr;
+    static ImFont* g_titleUiFont = nullptr;
 
     static std::string ToLower(const std::string& str);
     static std::string WideToUtf8(const std::wstring& wstr);
@@ -105,6 +116,7 @@ namespace safe::ui
     static std::string FormatDateTime(time_t timestamp);
     static bool GenerateRandomBytes(std::vector<uint8_t>& bytes);
     static bool DerivePasswordVerifier(const std::string& password, const std::vector<uint8_t>& salt, int iterations, std::vector<uint8_t>& verifierOut);
+    static bool IsStrongLockPassword(const std::string& password, std::string& reason);
     static std::string BytesToHex(const std::vector<uint8_t>& bytes);
     static bool HexToBytes(const std::string& hex, std::vector<uint8_t>& bytes);
     static bool ConstantTimeEqual(const std::vector<uint8_t>& lhs, const std::vector<uint8_t>& rhs);
@@ -147,6 +159,7 @@ namespace safe::ui
     static void RenderFolderList();
     static void RenderFolderDetails();
     static void RenderPasswordPopup();
+    static void RenderSectionHeading(const char* title);
     static void PerformLockOperation();
     static void PerformUnlockOperation();
     static bool ApplyLockOperation(const std::string& password);
@@ -157,6 +170,19 @@ namespace safe::ui
     bool UI::s_initialized = false;
 
     bool UI::Initialize() {
+        ImGuiIO& io = ImGui::GetIO();
+        const std::wstring executableDir = core::Filesystem::GetExecutablePath();
+        const std::wstring fontPath = core::Filesystem::JoinPath(
+            core::Filesystem::JoinPath(executableDir, L"assets\\fonts"),
+            L"Inter-Regular.ttf"
+        );
+        const std::string fontPathUtf8 = WideToUtf8(fontPath);
+        g_mainUiFont = io.Fonts->AddFontFromFileTTF(fontPathUtf8.c_str(), MAIN_UI_FONT_SIZE);
+        g_titleUiFont = io.Fonts->AddFontFromFileTTF(fontPathUtf8.c_str(), TITLE_UI_FONT_SIZE);
+        if (g_mainUiFont != nullptr) {
+            io.FontDefault = g_mainUiFont;
+        }
+
         if (!InitializePersistence()) {
             statusMessage = "Failed to initialize metadata storage";
             return false;
@@ -185,6 +211,8 @@ namespace safe::ui
 
     void UI::Cleanup() {
         s_initialized = false;
+        g_mainUiFont = nullptr;
+        g_titleUiFont = nullptr;
         ResetSelection();
         items.clear();
         openedRootSignature.clear();
@@ -281,6 +309,43 @@ namespace safe::ui
 
         BCryptCloseAlgorithmProvider(hPrf, 0);
         return status == 0;
+    }
+
+    static bool IsStrongLockPassword(const std::string& password, std::string& reason) {
+        reason.clear();
+        if (password.size() < 8) {
+            reason = "Password must be at least 8 characters.";
+            return false;
+        }
+        if (password.find('.') != std::string::npos) {
+            reason = "Do not use '.' in password.";
+            return false;
+        }
+        if (password.find("\xE3\x80\x80") != std::string::npos) {
+            reason = "Do not use spaces (including wide spaces) in password.";
+            return false;
+        }
+
+        bool hasUpper = false;
+        bool hasLower = false;
+        bool hasDigit = false;
+        bool hasSpecial = false;
+        for (const unsigned char ch : password) {
+            if (std::isspace(ch)) {
+                reason = "Do not use spaces (including wide spaces) in password.";
+                return false;
+            }
+            if (std::isupper(ch)) hasUpper = true;
+            else if (std::islower(ch)) hasLower = true;
+            else if (std::isdigit(ch)) hasDigit = true;
+            else hasSpecial = true;
+        }
+
+        if (!hasUpper || !hasLower || !hasDigit || !hasSpecial) {
+            reason = "Use upper/lower letters, a number, and a symbol.";
+            return false;
+        }
+        return true;
     }
 
     static std::string BytesToHex(const std::vector<uint8_t>& bytes) {
@@ -955,53 +1020,80 @@ namespace safe::ui
                      ImGuiWindowFlags_NoCollapse |
                      ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse |
                      ImGuiWindowFlags_NoMove
                      );
 
-        const float availableHeight = ImGui::GetContentRegionAvail().y - 8.0f;
-        const float middleHeight = availableHeight - TOPBAR_HEIGHT - ROOTPATHBAR_HEIGHT - STATUSBAR_HEIGHT;
+        const float totalAvailableHeight = ImGui::GetContentRegionAvail().y;
+        const float topHeight = TOPBAR_HEIGHT;
+        const float rootHeight = ROOTPATHBAR_HEIGHT;
+        const float statusHeight = STATUSBAR_HEIGHT;
+        const float verticalGapCount = 3.0f; // Top->Middle, Middle->Root, Root->Status
+        const float middleHeight = (std::max)(0.0f, totalAvailableHeight - topHeight - rootHeight - statusHeight - (CHILD_GAP * verticalGapCount));
+        const ImVec2 layoutStart = ImGui::GetCursorPos();
 
         // Top Bar
-        ImGui::BeginChild("TopBar", ImVec2(0, TOPBAR_HEIGHT), true, 
+        ImGui::SetCursorPos(layoutStart);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PANEL_PADDING_X, BAR_PADDING_Y));
+        ImGui::BeginChild("TopBar", ImVec2(0, topHeight), true,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         RenderTopBar();
         ImGui::EndChild();
+        ImGui::PopStyleVar();
 
         // Middle Area
-        ImGui::BeginChild("Middle", ImVec2(0, middleHeight), true);
+        ImGui::SetCursorPos(ImVec2(layoutStart.x, layoutStart.y + topHeight + CHILD_GAP));
+        ImGui::BeginChild("Middle", ImVec2(0, middleHeight), true,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+        const float middleContentHeight = ImGui::GetContentRegionAvail().y;
+        const float mainPanelWidth = (std::max)(0.0f, ImGui::GetContentRegionAvail().x - SIDEBAR_WIDTH - CHILD_GAP);
 
         // Sidebar (Left)
-        ImGui::BeginChild("Sidebar", ImVec2(SIDEBAR_WIDTH, 0), true);
-        ImGui::Text("Items");
-        ImGui::Separator();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PANEL_PADDING_X, PANEL_PADDING_Y));
+        ImGui::BeginChild("Sidebar", ImVec2(SIDEBAR_WIDTH, middleContentHeight), true,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        RenderSectionHeading("Items");
         RenderFolderList();
         ImGui::EndChild();
+        ImGui::PopStyleVar();
 
-        ImGui::SameLine();
+        ImGui::SameLine(0.0f, CHILD_GAP);
 
         // Main Panel (Right)
-        ImGui::BeginChild("MainPanel", ImVec2(0, 0), true);
-        ImGui::Text("Item Info");
-        ImGui::Separator();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PANEL_PADDING_X, PANEL_PADDING_Y));
+        ImGui::BeginChild("MainPanel", ImVec2(mainPanelWidth, middleContentHeight), true,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        RenderSectionHeading("Item Info");
         RenderMainPanel();
         ImGui::EndChild();
+        ImGui::PopStyleVar();
 
         ImGui::EndChild();
 
         // Root Path Bar
-        ImGui::BeginChild("RootPathBar", ImVec2(0, ROOTPATHBAR_HEIGHT), true,
+        ImGui::SetCursorPos(ImVec2(layoutStart.x, layoutStart.y + topHeight + CHILD_GAP + middleHeight + CHILD_GAP));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PANEL_PADDING_X, BAR_PADDING_Y));
+        ImGui::BeginChild("RootPathBar", ImVec2(0, rootHeight), true,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::TextDisabled("Root:");
+        ImGui::SameLine();
         if (!openedRootPath.empty()) {
-            ImGui::Text("Root: %s", WideToUtf8(openedRootPath).c_str());
+            ImGui::TextUnformatted(WideToUtf8(openedRootPath).c_str());
         } else {
-            ImGui::TextDisabled("Root: None");
+            ImGui::TextDisabled("None");
         }
         ImGui::EndChild();
+        ImGui::PopStyleVar();
 
         // Status Bar
-        ImGui::BeginChild("StatusBar", ImVec2(0, STATUSBAR_HEIGHT), true);
+        ImGui::SetCursorPos(ImVec2(layoutStart.x, layoutStart.y + topHeight + CHILD_GAP + middleHeight + CHILD_GAP + rootHeight + CHILD_GAP));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(PANEL_PADDING_X, BAR_PADDING_Y));
+        ImGui::BeginChild("StatusBar", ImVec2(0, statusHeight), true,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         RenderStatusBar();
         ImGui::EndChild();
+        ImGui::PopStyleVar();
 
         ImGui::End();
         
@@ -1010,11 +1102,7 @@ namespace safe::ui
 
     static void RenderTopBar()
     {
-        const float height = ImGui::GetContentRegionAvail().y;
-        const float itemHeight = ImGui::GetFrameHeight();
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (height - itemHeight) * 0.01f);
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 6));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 7));
 
         ImGui::SetNextItemWidth(SEARCH_WIDTH);
         ImGui::InputTextWithHint("##search", "Search...", searchBuffer, SEARCH_BUFFER_SIZE);
@@ -1033,24 +1121,20 @@ namespace safe::ui
 
         ImGui::SameLine(0, BUTTON_SPACING);
 
-        const bool stylePushed = multiSelectMode;
-        if (stylePushed)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.40f, 0.70f, 0.95f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.62f, 0.90f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.22f, 0.52f, 0.82f, 1.0f));
+        const bool selectModeWasActive = multiSelectMode;
+        if (selectModeWasActive) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.47f, 0.89f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.27f, 0.53f, 0.95f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.41f, 0.80f, 1.0f));
         }
-
-        if (ImGui::Button(multiSelectMode ? "Select ON" : "Select", ImVec2(SELECT_BUTTON_WIDTH, 0)))
+        if (ImGui::Button("Select", ImVec2(SELECT_BUTTON_WIDTH, 0)))
         {
             multiSelectMode = !multiSelectMode;
             statusMessage = multiSelectMode
                 ? "Select mode enabled: click to multi-select (Ctrl+Click also works)"
                 : "Select mode disabled (Ctrl+Click still works)";
         }
-
-        if (stylePushed)
-        {
+        if (selectModeWasActive) {
             ImGui::PopStyleColor(3);
         }
 
@@ -1122,13 +1206,35 @@ namespace safe::ui
      */
     static void RenderStatusBar()
     {
-        ImGui::Text("Status: %s", statusMessage.c_str());
+        ImGui::TextDisabled("Status:");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(statusMessage.c_str());
+    }
+
+    static void RenderSectionHeading(const char* title)
+    {
+        if (g_titleUiFont != nullptr) {
+            ImGui::PushFont(g_titleUiFont);
+        }
+        ImGui::TextUnformatted(title);
+        if (g_titleUiFont != nullptr) {
+            ImGui::PopFont();
+        }
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        ImGui::Separator();
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
     }
 
     static void RenderFolderList()
     {
         const bool hasSearchFilter = searchBuffer[0] != '\0';
         const std::string lowerSearchText = hasSearchFilter ? ToLower(searchBuffer) : "";
+
+        if (!multiSelectMode) {
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.86f, 0.86f, 0.86f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.90f, 0.90f, 0.90f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.82f, 0.82f, 0.82f, 1.0f));
+        }
 
         for (size_t i = 0; i < items.size(); i++)
         {
@@ -1194,6 +1300,10 @@ namespace safe::ui
                 }
             }
         }
+
+        if (!multiSelectMode) {
+            ImGui::PopStyleColor(3);
+        }
     }
 
     static void RenderFolderDetails()
@@ -1216,8 +1326,17 @@ namespace safe::ui
                 }
                 focusedItemId.clear();
             }
-            ImGui::Text("No item selected");
+            if (g_titleUiFont != nullptr) {
+                ImGui::PushFont(g_titleUiFont);
+            }
+            ImGui::TextUnformatted("No item selected");
+            if (g_titleUiFont != nullptr) {
+                ImGui::PopFont();
+            }
+            ImGui::Spacing();
             ImGui::TextDisabled("Select a file or folder to view details");
+            ImGui::Dummy(ImVec2(0.0f, 6.0f));
+            ImGui::TextDisabled("Tip: Use Open to choose a folder first.");
             return;
         }
 
@@ -1281,9 +1400,12 @@ namespace safe::ui
             ImGui::OpenPopup(popupTitle);
             passwordPopupNeedsOpen = false;
         }
-        ImGui::SetNextWindowSize(ImVec2(460, 182), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(PASSWORD_POPUP_WIDTH, PASSWORD_POPUP_HEIGHT), ImGuiCond_Appearing);
 
-        if (ImGui::BeginPopupModal(popupTitle, &showPasswordPopup, ImGuiWindowFlags_NoResize))
+        if (ImGui::BeginPopupModal(
+                popupTitle,
+                &showPasswordPopup,
+                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
         {
             const bool cancelPressed = ImGui::IsKeyPressed(ImGuiKey_Escape);
             ImGui::PushStyleColor(ImGuiCol_NavHighlight, ImVec4(0, 0, 0, 0));
@@ -1314,14 +1436,33 @@ namespace safe::ui
             const bool submittedWithEnter = ImGui::InputTextWithHint("##password", "Password", passwordBuffer, PASSWORD_BUFFER_SIZE, passwordFlags);
             ImGui::SameLine(0.0f, rowSpacing);
             if (ImGui::Button("Show##toggle-password", ImVec2(toggleButtonWidth, 0.0f))) {
-                passwordRevealUntil = ImGui::GetTime() + 0.3;
+                passwordRevealUntil = ImGui::GetTime() + 0.4;
                 passwordInputNeedsFocus = true;
             }
             ImGui::PopStyleVar();
             ImGui::SetCursorPosX(contentStartX);
-            if (!passwordPopupError.empty()) {
+            const float messageBlockStartY = ImGui::GetCursorPosY();
+            const float reservedMessageBlockHeight = ImGui::GetTextLineHeightWithSpacing();
+            std::string liveLockRequirementError;
+            if (passwordModeIsLock) {
+                std::string lockPasswordReason;
+                const std::string livePassword(passwordBuffer);
+                if (livePassword.empty()) {
+                    ImGui::TextDisabled("Use 8+ chars with upper/lowercase, number, symbol. No '.' or spaces.");
+                } else if (!IsStrongLockPassword(livePassword, lockPasswordReason)) {
+                    liveLockRequirementError = lockPasswordReason;
+                    ImGui::TextColored(ImVec4(0.85f, 0.20f, 0.20f, 1.0f), "%s", lockPasswordReason.c_str());
+                }
+                ImGui::Spacing();
+            }
+            if (!passwordPopupError.empty() &&
+                (!passwordModeIsLock || passwordPopupError != liveLockRequirementError)) {
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.85f, 0.20f, 0.20f, 1.0f), "%s", passwordPopupError.c_str());
+            }
+            const float messageBlockUsedHeight = ImGui::GetCursorPosY() - messageBlockStartY;
+            if (messageBlockUsedHeight < reservedMessageBlockHeight) {
+                ImGui::Dummy(ImVec2(0.0f, reservedMessageBlockHeight - messageBlockUsedHeight));
             }
             ImGui::Spacing();
             ImGui::SetCursorPosX(contentStartX);
@@ -1344,6 +1485,19 @@ namespace safe::ui
                     passwordInputNeedsFocus = true;
                 } else {
                     const std::string password(passwordBuffer);
+                    if (passwordModeIsLock) {
+                        std::string lockPasswordReason;
+                        if (!IsStrongLockPassword(password, lockPasswordReason)) {
+                            passwordPopupError.clear();
+                            statusMessage = lockPasswordReason;
+                            passwordInputNeedsFocus = true;
+                            passwordRevealUntil = 0.0;
+                            ImGui::PopStyleVar();
+                            ImGui::PopStyleColor();
+                            ImGui::EndPopup();
+                            return;
+                        }
+                    }
                     if (const bool ok = passwordModeIsLock ? ApplyLockOperation(password) : ApplyUnlockOperation(password); ok) {
                         passwordPopupError.clear();
                         statusMessage = passwordModeIsLock ? "Locked selected item(s)" : "Unlocked selected item(s)";
