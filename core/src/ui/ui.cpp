@@ -37,9 +37,9 @@
 namespace safe::ui
 {
     namespace {
-        constexpr float TOPBAR_HEIGHT = 45.0f;
-        constexpr float ROOTPATHBAR_HEIGHT = 30.0f;
-        constexpr float STATUSBAR_HEIGHT = 30.0f;
+        constexpr float TOPBAR_HEIGHT = 56.0f;
+        constexpr float ROOTPATHBAR_HEIGHT = 40.0f;
+        constexpr float STATUSBAR_HEIGHT = 40.0f;
         constexpr float SIDEBAR_WIDTH = 240.0f;
         constexpr float CHILD_GAP = 6.0f;
         constexpr float BUTTON_WIDTH = 80.0f;
@@ -47,10 +47,10 @@ namespace safe::ui
         constexpr float BUTTON_SPACING = 10.0f;
         constexpr float PANEL_PADDING_X = 12.0f;
         constexpr float PANEL_PADDING_Y = 10.0f;
-        constexpr float BAR_PADDING_Y = 6.5f;
+        constexpr float BAR_PADDING_Y = 9.0f;
         constexpr float SEARCH_WIDTH = 220.0f;
-        constexpr float PASSWORD_POPUP_WIDTH = 590.0f;
-        constexpr float PASSWORD_POPUP_HEIGHT = 260.0f;
+        constexpr float PASSWORD_POPUP_WIDTH = 720.0f;
+        constexpr float PASSWORD_POPUP_HEIGHT = 330.0f;
         constexpr size_t SEARCH_BUFFER_SIZE = 128;
         constexpr size_t PASSWORD_BUFFER_SIZE = 128;
         constexpr int DB_SCHEMA_VERSION = 5;
@@ -58,14 +58,15 @@ namespace safe::ui
         constexpr int DB_DEFAULT_KDF_ITERATIONS = 120000;
         constexpr size_t PASSWORD_SALT_SIZE = 16;
         constexpr size_t PASSWORD_VERIFIER_SIZE = 32;
-        constexpr float MAIN_UI_FONT_SIZE = 18.0f;
-        constexpr float TITLE_UI_FONT_SIZE = 20.0f;
+        constexpr float MAIN_UI_FONT_SIZE = 22.0f;
+        constexpr float DETAIL_UI_FONT_SIZE = 22.0f;
+        constexpr float TITLE_UI_FONT_SIZE = 22.0f;
     }
 
     struct Item {
         std::string id;
-        std::wstring path;       // Logical path for lock/unlock operations.
-        std::wstring sourcePath; // Physical scanned path on disk.
+        std::wstring path;
+        std::wstring sourcePath;
         std::string name;
         bool isFolder{};
         bool isLocked{};
@@ -104,6 +105,8 @@ namespace safe::ui
     static std::string passwordPopupError;
     static std::vector<std::string> passwordPopupTargetItemIds;
     static std::string unlockPasswordMismatchMessage;
+    static ImVec2 passwordPopupStoredPos = ImVec2(0.0f, 0.0f);
+    static bool passwordPopupHasStoredPos = false;
     constexpr double PASSWORD_REQUIRED_HINT_DURATION_SECONDS = 1.5;
     static std::string openedRootSignature;
     static double lastAutoRefreshAtSeconds = 0.0;
@@ -111,6 +114,7 @@ namespace safe::ui
 
     static sqlite3* g_db = nullptr;
     static ImFont* g_mainUiFont = nullptr;
+    static ImFont* g_detailUiFont = nullptr;
     static ImFont* g_titleUiFont = nullptr;
 
     static std::string ToLower(const std::string& str);
@@ -153,6 +157,7 @@ namespace safe::ui
     static std::vector<size_t> GetOperationIndices();
     static std::vector<size_t> ResolveIndicesForItemIds(const std::vector<std::string>& itemIds);
     static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter);
+    static ImVec2 ClampPopupTopLeftToMainViewport(const ImVec2& topLeft, const ImVec2& windowSize);
     static void OpenPasswordPopup(bool forLockOperation);
     static void ClosePasswordPopupAsCancelled();
 
@@ -182,6 +187,7 @@ namespace safe::ui
         );
         const std::string fontPathUtf8 = WideToUtf8(fontPath);
         g_mainUiFont = io.Fonts->AddFontFromFileTTF(fontPathUtf8.c_str(), MAIN_UI_FONT_SIZE);
+        g_detailUiFont = io.Fonts->AddFontFromFileTTF(fontPathUtf8.c_str(), DETAIL_UI_FONT_SIZE);
         g_titleUiFont = io.Fonts->AddFontFromFileTTF(fontPathUtf8.c_str(), TITLE_UI_FONT_SIZE);
         if (g_mainUiFont != nullptr) {
             io.FontDefault = g_mainUiFont;
@@ -216,6 +222,7 @@ namespace safe::ui
     void UI::Cleanup() {
         s_initialized = false;
         g_mainUiFont = nullptr;
+        g_detailUiFont = nullptr;
         g_titleUiFont = nullptr;
         ResetSelection();
         items.clear();
@@ -494,9 +501,24 @@ namespace safe::ui
     }
 
     static std::wstring OpenFolderDialog() {
+        using SetThreadDpiAwarenessContextFn = DPI_AWARENESS_CONTEXT(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        DPI_AWARENESS_CONTEXT previousDpiContext = nullptr;
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        const auto setThreadDpiAwarenessContext = user32 == nullptr
+            ? nullptr
+            : reinterpret_cast<SetThreadDpiAwarenessContextFn>(
+                GetProcAddress(user32, "SetThreadDpiAwarenessContext")
+            );
+        if (setThreadDpiAwarenessContext != nullptr) {
+            previousDpiContext = setThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+
         const HRESULT comInitResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         const bool shouldUninitializeCom = SUCCEEDED(comInitResult);
         if (FAILED(comInitResult) && comInitResult != RPC_E_CHANGED_MODE) {
+            if (setThreadDpiAwarenessContext != nullptr && previousDpiContext != nullptr) {
+                setThreadDpiAwarenessContext(previousDpiContext);
+            }
             return L"";
         }
 
@@ -532,6 +554,10 @@ namespace safe::ui
 
         if (shouldUninitializeCom) {
             CoUninitialize();
+        }
+
+        if (setThreadDpiAwarenessContext != nullptr && previousDpiContext != nullptr) {
+            setThreadDpiAwarenessContext(previousDpiContext);
         }
 
         return selectedPath;
@@ -1009,6 +1035,23 @@ namespace safe::ui
         return ToLower(item.name).find(lowerSearchText) != std::string::npos;
     }
 
+    static ImVec2 ClampPopupTopLeftToMainViewport(const ImVec2& topLeft, const ImVec2& windowSize) {
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        if (viewport == nullptr) {
+            return topLeft;
+        }
+
+        const float minX = viewport->WorkPos.x;
+        const float minY = viewport->WorkPos.y;
+        const float maxX = viewport->WorkPos.x + (std::max)(0.0f, viewport->WorkSize.x - windowSize.x);
+        const float maxY = viewport->WorkPos.y + (std::max)(0.0f, viewport->WorkSize.y - windowSize.y);
+
+        return ImVec2(
+            std::clamp(topLeft.x, minX, maxX),
+            std::clamp(topLeft.y, minY, maxY)
+        );
+    }
+
     static void OpenPasswordPopup(bool forLockOperation) {
         passwordModeIsLock = forLockOperation;
         passwordBuffer[0] = '\0';
@@ -1339,6 +1382,10 @@ namespace safe::ui
 
     static void RenderFolderDetails()
     {
+        if (g_detailUiFont != nullptr) {
+            ImGui::PushFont(g_detailUiFont);
+        }
+
         if (selectedItemIds.empty())
         {
             if (!focusedItemId.empty()) {
@@ -1353,9 +1400,15 @@ namespace safe::ui
                     ImGui::Text("Item ID: %s", focusedItem->id.c_str());
                     ImGui::Spacing();
                     ImGui::Separator();
+                    if (g_detailUiFont != nullptr) {
+                        ImGui::PopFont();
+                    }
                     return;
                 }
                 focusedItemId.clear();
+            }
+            if (g_detailUiFont != nullptr) {
+                ImGui::PopFont();
             }
             if (g_titleUiFont != nullptr) {
                 ImGui::PushFont(g_titleUiFont);
@@ -1378,6 +1431,9 @@ namespace safe::ui
             if (!item) {
                 ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Error: Invalid selection");
                 selectedItemIds.clear();
+                if (g_detailUiFont != nullptr) {
+                    ImGui::PopFont();
+                }
                 return;
             }
 
@@ -1391,6 +1447,9 @@ namespace safe::ui
             ImGui::Text("Item ID: %s", item->id.c_str());
             ImGui::Spacing();
             ImGui::Separator();
+            if (g_detailUiFont != nullptr) {
+                ImGui::PopFont();
+            }
             return;
         }
 
@@ -1416,6 +1475,9 @@ namespace safe::ui
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::TextDisabled("Actions will apply to all selected items");
+        if (g_detailUiFont != nullptr) {
+            ImGui::PopFont();
+        }
     }
 
     static void RenderPasswordPopup()
@@ -1432,12 +1494,35 @@ namespace safe::ui
             passwordPopupNeedsOpen = false;
         }
         ImGui::SetNextWindowSize(ImVec2(PASSWORD_POPUP_WIDTH, PASSWORD_POPUP_HEIGHT), ImGuiCond_Appearing);
+        if (passwordPopupHasStoredPos) {
+            passwordPopupStoredPos = ClampPopupTopLeftToMainViewport(
+                passwordPopupStoredPos,
+                ImVec2(PASSWORD_POPUP_WIDTH, PASSWORD_POPUP_HEIGHT)
+            );
+            ImGui::SetNextWindowPos(passwordPopupStoredPos, ImGuiCond_Appearing);
+        } else if (const ImGuiViewport* viewport = ImGui::GetMainViewport(); viewport != nullptr) {
+            const ImVec2 centeredPos(
+                viewport->WorkPos.x + (viewport->WorkSize.x * 0.5f),
+                viewport->WorkPos.y + (viewport->WorkSize.y * 0.5f)
+            );
+            ImGui::SetNextWindowPos(centeredPos, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        }
 
         if (ImGui::BeginPopupModal(
                 popupTitle,
                 &showPasswordPopup,
-                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
+                ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse))
         {
+            const ImVec2 popupPos = ImGui::GetWindowPos();
+            const ImVec2 clampedPopupPos = ClampPopupTopLeftToMainViewport(popupPos, ImGui::GetWindowSize());
+            if (popupPos.x != clampedPopupPos.x || popupPos.y != clampedPopupPos.y) {
+                ImGui::SetWindowPos(clampedPopupPos);
+            }
+            passwordPopupStoredPos = clampedPopupPos;
+            passwordPopupHasStoredPos = true;
+
             const bool cancelPressed = ImGui::IsKeyPressed(ImGuiKey_Escape);
             ImGui::PushStyleColor(ImGuiCol_NavHighlight, ImVec4(0, 0, 0, 0));
             const float contentStartX = ImGui::GetCursorPosX();
@@ -1447,19 +1532,19 @@ namespace safe::ui
             ImGui::SetCursorPosX(contentStartX);
             ImGui::PushTextWrapPos(contentRightX);
             ImGui::TextUnformatted("Enter password for the selected items.");
-            ImGui::TextDisabled(passwordModeIsLock ? "Mode: Lock" : "Mode: Unlock");
+            ImGui::TextColored(ImVec4(0.25f, 0.25f, 0.25f, 1.0f), "%s", passwordModeIsLock ? "Mode: Lock" : "Mode: Unlock");
             ImGui::PopTextWrapPos();
             ImGui::Spacing();
             ImGui::SetCursorPosX(contentStartX);
             const float rowSpacing = ImGui::GetStyle().ItemSpacing.x;
-            constexpr float toggleButtonWidth = 72.0f;
+            constexpr float toggleButtonWidth = 94.0f;
             const float inputWidth = std::max(80.0f, contentWidth - toggleButtonWidth - rowSpacing);
             ImGui::SetNextItemWidth(inputWidth);
             if (passwordInputNeedsFocus) {
                 ImGui::SetKeyboardFocusHere();
                 passwordInputNeedsFocus = false;
             }
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 9.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
             const bool passwordVisible = ImGui::GetTime() < passwordRevealUntil;
             const ImGuiInputTextFlags passwordFlags =
                 (passwordVisible ? ImGuiInputTextFlags_None : ImGuiInputTextFlags_Password) |
@@ -1484,7 +1569,7 @@ namespace safe::ui
                 if (showRequiredInline) {
                     ImGui::TextColored(ImVec4(0.85f, 0.20f, 0.20f, 1.0f), "Password is required");
                 } else if (livePassword.empty()) {
-                    ImGui::TextDisabled("Use 8+ chars with upper/lowercase, number, symbol. No '.' or spaces.");
+                    ImGui::TextColored(ImVec4(0.35f, 0.35f, 0.35f, 1.0f), "Use 8+ chars with upper/lowercase, number, symbol. No '.' or spaces.");
                 } else if (!IsStrongLockPassword(livePassword, lockPasswordReason)) {
                     liveLockRequirementError = lockPasswordReason;
                     ImGui::TextColored(ImVec4(0.85f, 0.20f, 0.20f, 1.0f), "%s", lockPasswordReason.c_str());
@@ -1511,7 +1596,7 @@ namespace safe::ui
             const float totalWidth = (buttonWidth * 2) + spacing;
             ImGui::SetCursorPosX(contentStartX + ((contentWidth - totalWidth) * 0.5f));
 
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 9.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 10.0f));
             const bool submitClicked = ImGui::Button("OK", ImVec2(buttonWidth, 0));
             if (submitClicked || submittedWithEnter)
             {

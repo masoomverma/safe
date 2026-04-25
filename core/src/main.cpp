@@ -22,6 +22,11 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <wrl/client.h>
+#include <cstdio>
+#include <string>
+
+#include "core/filesystem.hpp"
+#include "sqlite3.h"
 
 #define IDI_ICON1 101
 
@@ -70,6 +75,10 @@ constexpr UINT SWAP_CHAIN_FLAGS = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 // Globals for clear color
 static auto g_clearColor = ImVec4(0.10f, 0.10f, 0.10f, 1.00f);
 static bool g_SwapChainOccluded = false;
+static constexpr int DEFAULT_WINDOW_WIDTH = 1000;
+static constexpr int DEFAULT_WINDOW_HEIGHT = 750;
+static constexpr int MIN_WINDOW_WIDTH = 480;
+static constexpr int MIN_WINDOW_HEIGHT = 360;
 
 // HELPER FUNCTIONS
 
@@ -83,6 +92,235 @@ static void LogError(const wchar_t* message, const wchar_t* title = L"Error")
     OutputDebugStringW(L"\n");
 #endif
     MessageBoxW(nullptr, message, title, MB_ICONERROR | MB_OK);
+}
+
+static void EnablePerMonitorV2DpiAwareness()
+{
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32 != nullptr)
+    {
+        using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        const auto setProcessDpiAwarenessContext = reinterpret_cast<SetProcessDpiAwarenessContextFn>(
+            GetProcAddress(user32, "SetProcessDpiAwarenessContext")
+        );
+        if (setProcessDpiAwarenessContext != nullptr)
+        {
+            if (setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+            {
+                return;
+            }
+            setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+            return;
+        }
+
+        using SetProcessDPIAwareFn = BOOL(WINAPI*)();
+        const auto setProcessDPIAware = reinterpret_cast<SetProcessDPIAwareFn>(
+            GetProcAddress(user32, "SetProcessDPIAware")
+        );
+        if (setProcessDPIAware != nullptr)
+        {
+            setProcessDPIAware();
+        }
+    }
+}
+
+static bool OpenStateDatabase(sqlite3** dbOut)
+{
+    if (dbOut == nullptr)
+    {
+        return false;
+    }
+    *dbOut = nullptr;
+
+    const std::wstring appDataPath = safe::core::Filesystem::GetAppDataPath();
+    if (appDataPath.empty())
+    {
+        return false;
+    }
+    if (!safe::core::Filesystem::DirectoryExists(appDataPath) && !safe::core::Filesystem::CreateDirectory(appDataPath))
+    {
+        return false;
+    }
+
+    const std::wstring dbPath = safe::core::Filesystem::JoinPath(appDataPath, L"safe.db");
+    const int pathUtf8Len = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        dbPath.c_str(),
+        static_cast<int>(dbPath.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr
+    );
+    if (pathUtf8Len <= 0)
+    {
+        return false;
+    }
+
+    std::string dbPathUtf8(static_cast<size_t>(pathUtf8Len), '\0');
+    if (WideCharToMultiByte(
+            CP_UTF8,
+            0,
+            dbPath.c_str(),
+            static_cast<int>(dbPath.size()),
+            dbPathUtf8.data(),
+            pathUtf8Len,
+            nullptr,
+            nullptr
+        ) <= 0)
+    {
+        return false;
+    }
+
+    if (sqlite3_open(dbPathUtf8.c_str(), dbOut) != SQLITE_OK)
+    {
+        if (*dbOut != nullptr)
+        {
+            sqlite3_close(*dbOut);
+            *dbOut = nullptr;
+        }
+        return false;
+    }
+
+    static constexpr const char* createAppStateTableSql =
+        "CREATE TABLE IF NOT EXISTS app_state ("
+        "state_key TEXT PRIMARY KEY,"
+        "state_value TEXT NOT NULL"
+        ");";
+    if (sqlite3_exec(*dbOut, createAppStateTableSql, nullptr, nullptr, nullptr) != SQLITE_OK)
+    {
+        sqlite3_close(*dbOut);
+        *dbOut = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
+static bool IsRectVisibleOnAnyMonitor(const RECT& rect)
+{
+    return MonitorFromRect(&rect, MONITOR_DEFAULTTONULL) != nullptr;
+}
+
+static RECT ComputeDefaultWindowRect()
+{
+    RECT workArea = {};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0))
+    {
+        workArea.left = 0;
+        workArea.top = 0;
+        workArea.right = GetSystemMetrics(SM_CXSCREEN);
+        workArea.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+
+    const int workWidth = workArea.right - workArea.left;
+    const int workHeight = workArea.bottom - workArea.top;
+
+    RECT rect = {};
+    rect.left = workArea.left + (workWidth - DEFAULT_WINDOW_WIDTH) / 2;
+    rect.top = workArea.top + (workHeight - DEFAULT_WINDOW_HEIGHT) / 2;
+    rect.right = rect.left + DEFAULT_WINDOW_WIDTH;
+    rect.bottom = rect.top + DEFAULT_WINDOW_HEIGHT;
+    return rect;
+}
+
+static bool LoadSavedWindowPlacement(WINDOWPLACEMENT& placement)
+{
+    sqlite3* db = nullptr;
+    if (!OpenStateDatabase(&db))
+    {
+        return false;
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    static constexpr const char* selectSql =
+        "SELECT state_value FROM app_state WHERE state_key = ?1 LIMIT 1;";
+    if (sqlite3_prepare_v2(db, selectSql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        sqlite3_close(db);
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, "window_placement", -1, SQLITE_STATIC);
+    bool loaded = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        const auto* valueText = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (valueText != nullptr)
+        {
+            int left = 0;
+            int top = 0;
+            int right = 0;
+            int bottom = 0;
+            int showCmd = SW_SHOWNORMAL;
+#if defined(_MSC_VER)
+            const int parsed = ::sscanf_s(valueText, "%d,%d,%d,%d,%d", &left, &top, &right, &bottom, &showCmd);
+#else
+            const int parsed = std::sscanf(valueText, "%d,%d,%d,%d,%d", &left, &top, &right, &bottom, &showCmd);
+#endif
+            RECT normalRect = { left, top, right, bottom };
+            const int width = right - left;
+            const int height = bottom - top;
+            if (parsed == 5 && width >= MIN_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT && IsRectVisibleOnAnyMonitor(normalRect))
+            {
+                placement.length = sizeof(WINDOWPLACEMENT);
+                placement.flags = 0;
+                placement.showCmd = showCmd == SW_SHOWMAXIMIZED ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+                placement.ptMinPosition = { 0, 0 };
+                placement.ptMaxPosition = { 0, 0 };
+                placement.rcNormalPosition = normalRect;
+                loaded = true;
+            }
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return loaded;
+}
+
+static bool SaveWindowPlacement(HWND hWnd)
+{
+    WINDOWPLACEMENT placement = {};
+    placement.length = sizeof(WINDOWPLACEMENT);
+    if (!GetWindowPlacement(hWnd, &placement))
+    {
+        return false;
+    }
+
+    sqlite3* db = nullptr;
+    if (!OpenStateDatabase(&db))
+    {
+        return false;
+    }
+
+    const RECT& rect = placement.rcNormalPosition;
+    const int persistedShowCmd = placement.showCmd == SW_SHOWMAXIMIZED ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+    const std::string placementValue =
+        std::to_string(rect.left) + "," +
+        std::to_string(rect.top) + "," +
+        std::to_string(rect.right) + "," +
+        std::to_string(rect.bottom) + "," +
+        std::to_string(persistedShowCmd);
+
+    static constexpr const char* upsertSql =
+        "INSERT INTO app_state(state_key, state_value) VALUES(?1, ?2) "
+        "ON CONFLICT(state_key) DO UPDATE SET state_value = excluded.state_value;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, upsertSql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        sqlite3_close(db);
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, "window_placement", -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, placementValue.c_str(), -1, SQLITE_TRANSIENT);
+
+    const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return ok;
 }
 
 // DIRECTX 11 SETUP
@@ -205,6 +443,10 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     switch (msg)
     {
+    case WM_CLOSE:
+        SaveWindowPlacement(hWnd);
+        DestroyWindow(hWnd);
+        return 0;
     case WM_SIZE:
         if (g_pd3dDevice && g_pSwapChain && wParam != SIZE_MINIMIZED)
         {
@@ -255,6 +497,8 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
  */
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
+    EnablePerMonitorV2DpiAwareness();
+
     // Register window class
     WNDCLASSEXW wc = {};
     wc.cbSize        = sizeof(WNDCLASSEXW);
@@ -271,12 +515,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         return 1;
     }
 
+    WINDOWPLACEMENT initialPlacement = {};
+    const bool hasSavedPlacement = LoadSavedWindowPlacement(initialPlacement);
+    const RECT initialRect = hasSavedPlacement ? initialPlacement.rcNormalPosition : ComputeDefaultWindowRect();
+
     // Create window
     HWND hWnd = CreateWindowExW(
         0, wc.lpszClassName, L"Safe",
         WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        900, 660,
+        initialRect.left, initialRect.top,
+        initialRect.right - initialRect.left, initialRect.bottom - initialRect.top,
         nullptr, nullptr, hInstance, nullptr
     );
 
@@ -294,6 +542,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     SetWindowLong(hWnd, GWL_STYLE, winStyle);
     SetWindowPos(hWnd, nullptr, 0, 0, 0, 0,
         SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
+
+    if (hasSavedPlacement)
+    {
+        initialPlacement.length = sizeof(WINDOWPLACEMENT);
+        SetWindowPlacement(hWnd, &initialPlacement);
+    }
 
     // Init Direct3D
     if (!CreateDeviceD3D(hWnd))
@@ -433,6 +687,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 
     // Cleanup
     safe::ui::UI::Cleanup();
+    SaveWindowPlacement(hWnd);
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
