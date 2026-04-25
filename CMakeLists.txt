@@ -34,13 +34,22 @@ set(SQLITE_SOURCES
     core/libs/sqlite3/sqlite3.c
 )
 
+# Configure resource script with an absolute icon path so icon loading
+# does not depend on the build directory.
+set(APP_ICON_PATH "${CMAKE_SOURCE_DIR}/assets/icons/safe.ico")
+configure_file(
+    "${CMAKE_SOURCE_DIR}/app.rc.in"
+    "${CMAKE_BINARY_DIR}/app.rc"
+    @ONLY
+)
+
 # ── Target ───────────────────────────────────────────────────────────────────
 add_executable(Safe WIN32
     ${PROJECT_SOURCES}
     ${IMGUI_SOURCES}
     ${SQLITE_SOURCES}
 
-    app.rc
+    "${CMAKE_BINARY_DIR}/app.rc"
 )
 
 # Mark SQLite as C source (not C++)

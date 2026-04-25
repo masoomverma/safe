@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.8"
 #endif
 
 #ifndef SourceDir
@@ -16,8 +16,11 @@ AppName=Safe
 AppVersion={#AppVersion}
 AppPublisher=Safe Project
 DefaultDirName={localappdata}\Programs\Safe
+DefaultGroupName=Safe
+DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 UninstallDisplayName=Safe
+UninstallDisplayIcon={app}\Safe.exe
 OutputDir={#OutputDir}
 OutputBaseFilename=Safe
 Compression=lzma2
@@ -32,6 +35,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#SourceDir}\Safe.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\fonts\Inter_24pt-Regular.ttf"; DestDir: "{app}\assets\fonts"; DestName: "Inter-Regular.ttf"; Flags: ignoreversion
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+
+[Icons]
+Name: "{autoprograms}\Safe"; Filename: "{app}\Safe.exe"; WorkingDir: "{app}"
+Name: "{autoprograms}\Uninstall Safe"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Safe"; Filename: "{app}\Safe.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\Safe.exe"; Description: "Launch Safe"; Flags: nowait postinstall skipifsilent

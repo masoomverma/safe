@@ -73,7 +73,7 @@ Safe
 ├── installer
 │   └── inno
 ├── .gitignore
-├── app.rc
+├── app.rc.in
 ├── CMakeLists.txt
 ├── Note.md
 └── README.md

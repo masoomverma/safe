@@ -7,6 +7,8 @@
 
 #include <windows.h>
 #include <shlobj.h>
+#include <shobjidl.h>
+#include <objbase.h>
 #include <bcrypt.h>
 
 // Avoid Windows API macro collisions with core::Filesystem methods.
@@ -98,9 +100,11 @@ namespace safe::ui
     static char passwordBuffer[PASSWORD_BUFFER_SIZE] = "";
     static bool passwordInputNeedsFocus = false;
     static double passwordRevealUntil = 0.0;
+    static double passwordRequiredHintUntil = 0.0;
     static std::string passwordPopupError;
     static std::vector<std::string> passwordPopupTargetItemIds;
     static std::string unlockPasswordMismatchMessage;
+    constexpr double PASSWORD_REQUIRED_HINT_DURATION_SECONDS = 1.5;
     static std::string openedRootSignature;
     static double lastAutoRefreshAtSeconds = 0.0;
     constexpr double AUTO_REFRESH_INTERVAL_SECONDS = 1.0;
@@ -490,22 +494,47 @@ namespace safe::ui
     }
 
     static std::wstring OpenFolderDialog() {
-        BROWSEINFOW bi = {};
-        bi.lpszTitle = L"Select folder to open";
-        bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI | BIF_NEWDIALOGSTYLE;
-        PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
-        if (!pidl) return L"";
-
-        wchar_t path[MAX_PATH] = {0};
-        const bool ok = SHGetPathFromIDListW(pidl, path) != 0;
-
-        IMalloc* allocator = nullptr;
-        if (SUCCEEDED(SHGetMalloc(&allocator)) && allocator) {
-            allocator->Free(pidl);
-            allocator->Release();
+        const HRESULT comInitResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        const bool shouldUninitializeCom = SUCCEEDED(comInitResult);
+        if (FAILED(comInitResult) && comInitResult != RPC_E_CHANGED_MODE) {
+            return L"";
         }
 
-        return ok ? std::wstring(path) : L"";
+        IFileOpenDialog* fileDialog = nullptr;
+        std::wstring selectedPath;
+        const HRESULT dialogHr = CoCreateInstance(
+            CLSID_FileOpenDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&fileDialog)
+        );
+        if (SUCCEEDED(dialogHr) && fileDialog != nullptr) {
+            DWORD options = 0;
+            if (SUCCEEDED(fileDialog->GetOptions(&options))) {
+                fileDialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+            }
+            fileDialog->SetTitle(L"Select folder to open");
+
+            if (SUCCEEDED(fileDialog->Show(nullptr))) {
+                IShellItem* shellItem = nullptr;
+                if (SUCCEEDED(fileDialog->GetResult(&shellItem)) && shellItem != nullptr) {
+                    PWSTR path = nullptr;
+                    if (SUCCEEDED(shellItem->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path != nullptr) {
+                        selectedPath = path;
+                        CoTaskMemFree(path);
+                    }
+                    shellItem->Release();
+                }
+            }
+
+            fileDialog->Release();
+        }
+
+        if (shouldUninitializeCom) {
+            CoUninitialize();
+        }
+
+        return selectedPath;
     }
 
     static bool InitializePersistence() {
@@ -987,6 +1016,7 @@ namespace safe::ui
         unlockPasswordMismatchMessage.clear();
         passwordInputNeedsFocus = true;
         passwordRevealUntil = 0.0;
+        passwordRequiredHintUntil = 0.0;
         passwordPopupTargetItemIds.clear();
         for (const size_t idx : GetOperationIndices()) {
             if (IsValidIndex(idx)) {
@@ -1005,6 +1035,7 @@ namespace safe::ui
         passwordPopupError.clear();
         passwordInputNeedsFocus = false;
         passwordRevealUntil = 0.0;
+        passwordRequiredHintUntil = 0.0;
         statusMessage = passwordModeIsLock ? "Lock cancelled" : "Unlock cancelled";
         ImGui::CloseCurrentPopup();
     }
@@ -1433,7 +1464,8 @@ namespace safe::ui
             const ImGuiInputTextFlags passwordFlags =
                 (passwordVisible ? ImGuiInputTextFlags_None : ImGuiInputTextFlags_Password) |
                 ImGuiInputTextFlags_EnterReturnsTrue;
-            const bool submittedWithEnter = ImGui::InputTextWithHint("##password", "Password", passwordBuffer, PASSWORD_BUFFER_SIZE, passwordFlags);
+            const bool submittedWithEnter = ImGui::InputTextWithHint("##password", "Password", passwordBuffer,
+                                                                     PASSWORD_BUFFER_SIZE, passwordFlags);
             ImGui::SameLine(0.0f, rowSpacing);
             if (ImGui::Button("Show##toggle-password", ImVec2(toggleButtonWidth, 0.0f))) {
                 passwordRevealUntil = ImGui::GetTime() + 0.4;
@@ -1447,7 +1479,11 @@ namespace safe::ui
             if (passwordModeIsLock) {
                 std::string lockPasswordReason;
                 const std::string livePassword(passwordBuffer);
-                if (livePassword.empty()) {
+                const bool showRequiredInline =
+                    livePassword.empty() && (ImGui::GetTime() < passwordRequiredHintUntil);
+                if (showRequiredInline) {
+                    ImGui::TextColored(ImVec4(0.85f, 0.20f, 0.20f, 1.0f), "Password is required");
+                } else if (livePassword.empty()) {
                     ImGui::TextDisabled("Use 8+ chars with upper/lowercase, number, symbol. No '.' or spaces.");
                 } else if (!IsStrongLockPassword(livePassword, lockPasswordReason)) {
                     liveLockRequirementError = lockPasswordReason;
@@ -1480,8 +1516,12 @@ namespace safe::ui
             if (submitClicked || submittedWithEnter)
             {
                 if (passwordBuffer[0] == '\0') {
-                    statusMessage = "Password is required";
-                    passwordPopupError = "Password is required";
+                    if (passwordModeIsLock) {
+                        passwordPopupError.clear();
+                        passwordRequiredHintUntil = ImGui::GetTime() + PASSWORD_REQUIRED_HINT_DURATION_SECONDS;
+                    } else {
+                        passwordPopupError = "Password is required";
+                    }
                     passwordInputNeedsFocus = true;
                 } else {
                     const std::string password(passwordBuffer);
@@ -1489,7 +1529,6 @@ namespace safe::ui
                         std::string lockPasswordReason;
                         if (!IsStrongLockPassword(password, lockPasswordReason)) {
                             passwordPopupError.clear();
-                            statusMessage = lockPasswordReason;
                             passwordInputNeedsFocus = true;
                             passwordRevealUntil = 0.0;
                             ImGui::PopStyleVar();
@@ -1513,11 +1552,9 @@ namespace safe::ui
                             : unlockPasswordMismatchMessage;
                         passwordInputNeedsFocus = true;
                         passwordRevealUntil = 0.0;
-                        statusMessage = passwordPopupError;
                     } else {
                         passwordPopupError = "Lock failed for one or more items";
                         passwordRevealUntil = 0.0;
-                        statusMessage = "Lock failed for one or more items";
                     }
                 }
             }
