@@ -6,4 +6,4 @@ namespace safe::core
         return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
     }
 
-} // namespace safa::core
+} // namespace safe::core

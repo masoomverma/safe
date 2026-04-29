@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Safe VERSION 1.0.0 LANGUAGES C CXX)
+project(Safe VERSION 1.1.2 LANGUAGES C CXX)
 
 # ── Language standard ────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
@@ -79,7 +79,7 @@ target_link_libraries(Safe PRIVATE
 if(MSVC)
     target_compile_options(Safe PRIVATE /W4 /MP)
     # Suppress warnings inside third-party ImGui headers
-    target_compile_options(Safe PRIVATE /external:I${CMAKE_SOURCE_DIR}/libs /external:W0)
+    target_compile_options(Safe PRIVATE /external:I${CMAKE_SOURCE_DIR}/core/libs /external:W0)
 else()
     target_compile_options(Safe PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -117,7 +117,7 @@ if(ISCC_EXECUTABLE)
 endif()
 
 # OpenSSL DLLs
-set(OPENSSL_DLL_DIR "${CMAKE_SOURCE_DIR}/build" CACHE PATH "Directory containing OpenSSL runtime DLLs")
+set(OPENSSL_DLL_DIR "${CMAKE_SOURCE_DIR}/core/build" CACHE PATH "Directory containing OpenSSL runtime DLLs")
 if(EXISTS "${OPENSSL_DLL_DIR}")
     file(GLOB OPENSSL_DLLS
         "${OPENSSL_DLL_DIR}/libcrypto*.dll"

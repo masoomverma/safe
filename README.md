@@ -1,83 +1,92 @@
-# Safe - How to Use
+# Safe
 
-## 1. Open
+Safe is a Windows desktop app for locking and unlocking files/folders into encrypted `.safe` archives.
+
+## Project status
+
+- Current app version: `1.1.2`
+- Core workflow is implemented: open folder, browse/search, lock, unlock, and persist metadata/state.
+
+## Features
+
+1. Full-screen Dear ImGui UI (TopBar, Sidebar, MainPanel, StatusBar)
+2. Selection modes: single click, Select mode, Ctrl+Click toggle, Shift+Click range
+3. Lock/Unlock for selected items or focused item
+4. Live refresh while opened root remains active
+5. Metadata persistence in `%LOCALAPPDATA%\Safe\safe.db`
+6. Last opened root path restored on startup
+
+## Technology stack
+
+1. C++20
+2. CMake + Ninja
+3. Win32 API
+4. DirectX 11
+5. Dear ImGui (Win32 + DX11 backends)
+6. SQLite3
+7. Windows BCrypt
+
+## OpenSSL runtime DLLs (`core\build`)
+
+Required DLLs:
+
+1. `libcrypto-3-x64.dll`
+2. `libssl-3-x64.dll`
+
+Setup:
+
+1. Install OpenSSL 3.x (Win64)
+2. Copy both DLLs into `core\build\`
+3. Configure:
+   - `cmake -S . -B release-build -G Ninja -DOPENSSL_DLL_DIR="core\build"`
+4. Build:
+   - `cmake --build release-build`
+
+## Usage
+
+### Open folder
 
 1. Launch the app.
-2. Click **Open** in the top bar.
-3. Select a root folder from the system folder picker.
-4. The sidebar is populated from real filesystem folders and files in the selected root.
-5. While that root stays open, new/removed/renamed items are auto-refreshed live.
+2. Click **Open**.
+3. Choose a root folder.
 
-## 2. Select items
-
-### Mouse only
-
-1. **Single selection:** click an item.
-2. **Button multi-select mode:** click **Select** (it becomes **Select ON**), then click items to add/remove them.
-3. Click **Select ON** again to turn button multi-select mode off.
-
-### Keyboard + mouse
-
-1. **Ctrl + Click:** random (non-contiguous) selection/deselection.
-2. **Shift + Click:** range selection from the current anchor to clicked item.
-
-## 3. Lock
+### Lock
 
 1. Select unlocked item(s).
 2. Click **Lock**.
-3. Enter a password in the lock popup.
-4. The selected item (file or folder) is packed and encrypted into a `.safe` archive, and the original item is removed.
-5. Press **Esc** to close the lock password popup.
+3. Enter password.
 
-## 4. Unlock
+### Unlock
 
 1. Select locked item(s).
 2. Click **Unlock**.
-3. Enter the same password used to lock.
-4. The `.safe` archive is decrypted and the original file/folder content is restored to disk.
-5. Press **Esc** to close the unlock password popup.
+3. Enter the original lock password.
 
-## 5. Search
+### Search and details
 
-1. Use the **Search...** box in the top bar.
-2. The sidebar list filters items by name while you type.
+1. Use the **Search...** box to filter by name.
+2. The right panel shows metadata (type, status, size, path, source path, modified time).
 
-## 6. Item details
-
-1. The right panel shows real metadata for selected items.
-2. Metadata includes type, status, size, logical path, source path, and last-modified time.
-
-## 7. Persistence
-
-1. Item metadata is stored in `%LOCALAPPDATA%\Safe\safe.db`.
-2. Lock state, item kind, and a salted PBKDF2 password verifier survive app restarts.
-3. Encrypted `.safe` archives are detected on reload and shown as locked entries.
-4. SQLite schema upgrades are migration-safe using `PRAGMA user_version`.
-5. The last opened root path is persisted and auto-loaded on next startup.
-
-
-## 8. Safe UI 
+## UI preview
 
 ![Safe UI](assets/icons/SafeUI/Safe.png)
-![Open_Feature](assets/icons/SafeUI/Open.png)
-
-### - Lock/Unlock
-
+![Open Feature](assets/icons/SafeUI/Open.png)
 ![Lock](assets/icons/SafeUI/Lock.png)
 ![Unlock](assets/icons/SafeUI/Unlock.png)
 
-## 9. Build user-level installer.exe
+## Build installer (per-user)
 
-1. Install **Inno Setup 6** (for `ISCC.exe`).
+1. Install **Inno Setup 6** (`ISCC.exe`).
 2. Configure and build:
    - `cmake -S . -B debug-build`
    - `cmake --build debug-build --config Release --target installer`
-3. Output installer:
+3. Output:
    - `debug-build\installer\safe.exe`
 
-This installer is explicitly **per-user only** (`PrivilegesRequired=lowest`) and installs to:
-- `%LOCALAPPDATA%\Programs\Safe`
-- It also appends the installation directory to the current user's `PATH`.
-- Uninstall removes the same user `PATH` entry automatically.
-- Uninstall removes installed app content but preserves any `.safe` archived files/folders.
-- Uninstall prompts whether to also remove `%LOCALAPPDATA%\Safe` user data (including `safe.db`).
+Installer behavior:
+
+- Per-user install (`PrivilegesRequired=lowest`) to `%LOCALAPPDATA%\Programs\Safe`
+- Adds install directory to current user `PATH`
+- Uninstall removes that `PATH` entry
+- Uninstall removes installed app files but keeps `.safe` archives
+- Uninstall prompts to optionally remove `%LOCALAPPDATA%\Safe` data (including `safe.db`)

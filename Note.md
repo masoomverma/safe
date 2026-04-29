@@ -1,58 +1,50 @@
-# Safe - Project Overview
+# Safe - Project Notes
 
-## 1. Purpose
+## Purpose
 
-Safe is a Windows desktop application for locking and unlocking files and folders into `.safe` archives through a graphical interface.
+Safe is a Windows desktop app for locking and unlocking files/folders into encrypted `.safe` archives.
 
-## 2. Current Functional Scope
+## Current state
 
-The core workflow is implemented and operational:
+- Current app version: `1.1.2`
+- Main workflow is implemented: open folder, browse/search, lock, unlock, and persist state.
 
-1. Open a target folder
-2. Search and browse items
-3. Lock selected item(s)
-4. Unlock selected item(s)
-5. Persist metadata and restore the last opened path
+## Implemented capabilities
 
-## 3. Implemented Features
+1. Full-screen Dear ImGui UI (TopBar, Sidebar, MainPanel, StatusBar)
+2. Selection behavior: single click, Select mode, Ctrl+Click toggle, Shift+Click range
+3. Lock/Unlock operations for selected items or focused item
+4. Live refresh of opened root content
+5. Metadata persistence in `%LOCALAPPDATA%\Safe\safe.db`
+6. Startup restore of last opened root path
 
-1. Full-screen Dear ImGui interface with TopBar, Sidebar, MainPanel, and StatusBar
-2. Selection system with focus, Select mode, Ctrl+Click toggle, and Shift+Click range selection
-3. Lock/Unlock operations on selected items, or on the focused item when no selection exists
-4. Password modal with stable multi-select retry behavior
-5. Unlock feedback rules:
-   - If no item is unlocked in the current attempt: **"Wrong password. Please try again."**
-   - If only part of the selection is unlocked: **"Some selected items need a different password."**
-6. SQLite metadata persistence (`%LOCALAPPDATA%\Safe\safe.db`)
-7. Automatic restoration of the last opened root path at startup
-
-## 4. Technology Stack
+## Technology
 
 1. C++20
 2. CMake + Ninja
 3. Win32 API
 4. DirectX 11
-5. Dear ImGui (including Win32 and DX11 backends)
+5. Dear ImGui (Win32 + DX11 backends)
 6. SQLite3
 7. Windows BCrypt
 
-## 5. OpenSSL Runtime DLL Requirements (`core\build`)
+## OpenSSL runtime DLLs (`core\build`)
 
-Required runtime files:
+Required DLLs:
 
 1. `libcrypto-3-x64.dll`
 2. `libssl-3-x64.dll`
 
-Recommended setup process:
+Setup:
 
 1. Install OpenSSL 3.x (Win64)
-2. Copy the required DLL files into `core\build\`
-3. Configure the project:
+2. Copy both DLLs into `core\build\`
+3. Configure:
    - `cmake -S . -B release-build -G Ninja -DOPENSSL_DLL_DIR="core\build"`
-4. Build the project:
+4. Build:
    - `cmake --build release-build`
 
-## 6. Project Structure
+## Repository layout
 
 ```text
 Safe
@@ -72,9 +64,8 @@ Safe
 │       └── ui
 ├── installer
 │   └── inno
-├── .gitignore
 ├── app.rc.in
 ├── CMakeLists.txt
-├── Note.md
-└── README.md
+├── README.md
+└── Note.md
 ```

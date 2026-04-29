@@ -3,6 +3,7 @@
 
 #include <string>
 #include <cstdint>
+#include <vector>
 
 namespace safe::core
 {
@@ -48,6 +49,9 @@ namespace safe::core
         // Operations (Phase 5-6 implementation)
         bool Lock(const std::string& password);
         bool Unlock(const std::string& password);
+        static bool CreateGroupedArchive(const std::vector<std::wstring>& sourcePaths,
+                                         const std::wstring& outputArchivePath,
+                                         const std::string& password);
 
         // Utilities
         [[nodiscard]] std::wstring GetDisplayName() const;

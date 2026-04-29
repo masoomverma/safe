@@ -23,6 +23,7 @@
 #endif
 
 #include <vector>
+#include <array>
 #include <unordered_set>
 #include <unordered_map>
 #include <string>
@@ -32,6 +33,7 @@
 #include <ctime>
 #include <sstream>
 #include <iomanip>
+#include <filesystem>
 #include <ranges>
 
 namespace safe::ui
@@ -51,8 +53,13 @@ namespace safe::ui
         constexpr float SEARCH_WIDTH = 220.0f;
         constexpr float PASSWORD_POPUP_WIDTH = 720.0f;
         constexpr float PASSWORD_POPUP_HEIGHT = 330.0f;
+        constexpr float MULTI_LOCK_POPUP_WIDTH = 520.0f;
+        constexpr float MULTI_LOCK_POPUP_HEIGHT = 220.0f;
+        constexpr float ARCHIVE_NAME_POPUP_WIDTH = 580.0f;
+        constexpr float ARCHIVE_NAME_POPUP_HEIGHT = 250.0f;
         constexpr size_t SEARCH_BUFFER_SIZE = 128;
         constexpr size_t PASSWORD_BUFFER_SIZE = 128;
+        constexpr size_t ARCHIVE_NAME_BUFFER_SIZE = 128;
         constexpr int DB_SCHEMA_VERSION = 5;
         constexpr int DB_DEFAULT_CRYPTO_VERSION = 1;
         constexpr int DB_DEFAULT_KDF_ITERATIONS = 120000;
@@ -85,6 +92,11 @@ namespace safe::ui
         int kdfIterations{DB_DEFAULT_KDF_ITERATIONS};
     };
 
+    enum class LockOperationMode {
+        Individual,
+        Grouped
+    };
+
     static std::vector<Item> items;
     static std::unordered_set<std::string> selectedItemIds;
     static std::string focusedItemId;
@@ -95,15 +107,25 @@ namespace safe::ui
     static std::wstring openedRootPath;
     static char searchBuffer[SEARCH_BUFFER_SIZE] = "";
     static std::string statusMessage = "Ready";
+    static bool showMultiLockModePopup = false;
+    static bool multiLockModePopupNeedsOpen = false;
+    static bool showArchiveNamePopup = false;
+    static bool archiveNamePopupNeedsOpen = false;
+    static bool archiveNameInputNeedsFocus = false;
+    static std::string archiveNamePopupError;
+    static char archiveNameBuffer[ARCHIVE_NAME_BUFFER_SIZE] = "";
     static bool showPasswordPopup = false;
     static bool passwordPopupNeedsOpen = false;
     static bool passwordModeIsLock = true;
+    static LockOperationMode activeLockOperationMode = LockOperationMode::Individual;
     static char passwordBuffer[PASSWORD_BUFFER_SIZE] = "";
     static bool passwordInputNeedsFocus = false;
     static double passwordRevealUntil = 0.0;
     static double passwordRequiredHintUntil = 0.0;
     static std::string passwordPopupError;
     static std::vector<std::string> passwordPopupTargetItemIds;
+    static std::vector<std::string> pendingLockTargetItemIds;
+    static std::string groupedArchiveName;
     static std::string unlockPasswordMismatchMessage;
     static ImVec2 passwordPopupStoredPos = ImVec2(0.0f, 0.0f);
     static bool passwordPopupHasStoredPos = false;
@@ -156,9 +178,18 @@ namespace safe::ui
     static std::vector<size_t> GetSelectedIndices();
     static std::vector<size_t> GetOperationIndices();
     static std::vector<size_t> ResolveIndicesForItemIds(const std::vector<std::string>& itemIds);
+    static std::vector<std::string> BuildItemIdsFromIndices(const std::vector<size_t>& indices);
     static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter);
+    static bool IsValidGroupedArchiveName(const std::string& archiveName, std::string& reason);
+    static void OpenMultiLockModePopup(const std::vector<std::string>& targetItemIds);
+    static void CloseMultiLockModePopupAsCancelled();
+    static void OpenArchiveNamePopup();
+    static void CloseArchiveNamePopupAsCancelled();
+    static void ResetPendingGroupedLockState();
     static ImVec2 ClampPopupTopLeftToMainViewport(const ImVec2& topLeft, const ImVec2& windowSize);
-    static void OpenPasswordPopup(bool forLockOperation);
+    static void OpenPasswordPopup(bool forLockOperation,
+                                  const std::vector<std::string>& targetItemIds = {},
+                                  LockOperationMode lockMode = LockOperationMode::Individual);
     static void ClosePasswordPopupAsCancelled();
 
     static void RenderMainLayout();
@@ -167,10 +198,14 @@ namespace safe::ui
     static void RenderStatusBar();
     static void RenderFolderList();
     static void RenderFolderDetails();
+    static void RenderMultiLockModePopup();
+    static void RenderArchiveNamePopup();
     static void RenderPasswordPopup();
     static void RenderSectionHeading(const char* title);
     static void PerformLockOperation();
     static void PerformUnlockOperation();
+    static bool ApplyIndividualLockOperation(const std::string& password, const std::vector<size_t>& targetIndices);
+    static bool ApplyGroupedLockOperation(const std::string& password, const std::vector<size_t>& targetIndices);
     static bool ApplyLockOperation(const std::string& password);
     static bool ApplyUnlockOperation(const std::string& password);
     static std::string BuildRootSnapshotSignature(const std::wstring& rootPath);
@@ -1030,9 +1065,148 @@ namespace safe::ui
         return indices;
     }
 
+    static std::vector<std::string> BuildItemIdsFromIndices(const std::vector<size_t>& indices) {
+        std::vector<std::string> ids;
+        ids.reserve(indices.size());
+        for (const size_t idx : indices) {
+            if (IsValidIndex(idx)) {
+                ids.push_back(items[idx].id);
+            }
+        }
+        return ids;
+    }
+
     static bool ItemMatchesFilter(const Item& item, const std::string& lowerSearchText, bool hasSearchFilter) {
         if (!hasSearchFilter) return true;
         return ToLower(item.name).find(lowerSearchText) != std::string::npos;
+    }
+
+    static bool IsValidGroupedArchiveName(const std::string& archiveName, std::string& reason) {
+        reason.clear();
+        if (archiveName.empty()) {
+            reason = "Archive name is required";
+            return false;
+        }
+        if (archiveName == "." || archiveName == "..") {
+            reason = "Archive name is invalid";
+            return false;
+        }
+
+        constexpr std::array<char, 9> invalidChars = {'<', '>', ':', '"', '/', '\\', '|', '?', '*'};
+        for (const char ch : archiveName) {
+            if (static_cast<unsigned char>(ch) < 32) {
+                reason = "Archive name contains invalid characters";
+                return false;
+            }
+            if (std::ranges::find(invalidChars, ch) != invalidChars.end()) {
+                reason = "Archive name contains invalid characters";
+                return false;
+            }
+        }
+
+        if (!archiveName.empty() && (archiveName.back() == ' ' || archiveName.back() == '.')) {
+            reason = "Archive name cannot end with space or '.'";
+            return false;
+        }
+
+        const std::string upperName = [] (const std::string& value) {
+            std::string out = value;
+            std::ranges::transform(out, out.begin(), [](const unsigned char c) {
+                if (c >= 'a' && c <= 'z') {
+                    return static_cast<char>(c - 'a' + 'A');
+                }
+                return static_cast<char>(c);
+            });
+            return out;
+        }(archiveName);
+        const size_t dotPos = upperName.find('.');
+        const std::string stem = dotPos == std::string::npos ? upperName : upperName.substr(0, dotPos);
+        const std::unordered_set<std::string> reservedNames = {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        };
+        if (reservedNames.contains(stem)) {
+            reason = "Archive name is reserved by Windows";
+            return false;
+        }
+
+        if (openedRootPath.empty()) {
+            reason = "Open a folder before creating grouped archive";
+            return false;
+        }
+
+        const std::wstring archiveBasePath = core::Filesystem::JoinPath(openedRootPath, Utf8ToWide(archiveName));
+        const std::wstring archiveFilePath = archiveBasePath + L".safe";
+        const std::unordered_set<std::string> pendingIds(
+            pendingLockTargetItemIds.begin(),
+            pendingLockTargetItemIds.end()
+        );
+        for (const Item& item : items) {
+            if (item.path == archiveBasePath && !pendingIds.contains(item.id)) {
+                reason = "Archive name conflicts with existing item";
+                return false;
+            }
+        }
+        if (core::Filesystem::FileExists(archiveFilePath)) {
+            reason = "A .safe archive with this name already exists";
+            return false;
+        }
+        return true;
+    }
+
+    static void OpenMultiLockModePopup(const std::vector<std::string>& targetItemIds) {
+        pendingLockTargetItemIds = targetItemIds;
+        groupedArchiveName.clear();
+        archiveNameBuffer[0] = '\0';
+        archiveNamePopupError.clear();
+        showArchiveNamePopup = false;
+        archiveNamePopupNeedsOpen = false;
+        showMultiLockModePopup = true;
+        multiLockModePopupNeedsOpen = true;
+    }
+
+    static void CloseMultiLockModePopupAsCancelled() {
+        showMultiLockModePopup = false;
+        multiLockModePopupNeedsOpen = false;
+        pendingLockTargetItemIds.clear();
+        groupedArchiveName.clear();
+        archiveNameBuffer[0] = '\0';
+        archiveNamePopupError.clear();
+        statusMessage = "Lock cancelled";
+        ImGui::CloseCurrentPopup();
+    }
+
+    static void OpenArchiveNamePopup() {
+        showArchiveNamePopup = true;
+        archiveNamePopupNeedsOpen = true;
+        archiveNameInputNeedsFocus = true;
+        archiveNamePopupError.clear();
+    }
+
+    static void CloseArchiveNamePopupAsCancelled() {
+        showArchiveNamePopup = false;
+        archiveNamePopupNeedsOpen = false;
+        archiveNameInputNeedsFocus = false;
+        groupedArchiveName.clear();
+        archiveNameBuffer[0] = '\0';
+        archiveNamePopupError.clear();
+        pendingLockTargetItemIds.clear();
+        statusMessage = "Lock cancelled";
+        ImGui::CloseCurrentPopup();
+    }
+
+    static void ResetPendingGroupedLockState() {
+        pendingLockTargetItemIds.clear();
+        groupedArchiveName.clear();
+        archiveNameBuffer[0] = '\0';
+        archiveNamePopupError.clear();
+        archiveNameInputNeedsFocus = false;
+        showMultiLockModePopup = false;
+        multiLockModePopupNeedsOpen = false;
+        showArchiveNamePopup = false;
+        archiveNamePopupNeedsOpen = false;
+        activeLockOperationMode = LockOperationMode::Individual;
     }
 
     static ImVec2 ClampPopupTopLeftToMainViewport(const ImVec2& topLeft, const ImVec2& windowSize) {
@@ -1052,18 +1226,27 @@ namespace safe::ui
         );
     }
 
-    static void OpenPasswordPopup(bool forLockOperation) {
+    static void OpenPasswordPopup(bool forLockOperation,
+                                  const std::vector<std::string>& targetItemIds,
+                                  LockOperationMode lockMode) {
         passwordModeIsLock = forLockOperation;
+        if (forLockOperation) {
+            activeLockOperationMode = lockMode;
+        } else {
+            activeLockOperationMode = LockOperationMode::Individual;
+        }
         passwordBuffer[0] = '\0';
         passwordPopupError.clear();
         unlockPasswordMismatchMessage.clear();
         passwordInputNeedsFocus = true;
         passwordRevealUntil = 0.0;
         passwordRequiredHintUntil = 0.0;
-        passwordPopupTargetItemIds.clear();
-        for (const size_t idx : GetOperationIndices()) {
-            if (IsValidIndex(idx)) {
-                passwordPopupTargetItemIds.push_back(items[idx].id);
+        passwordPopupTargetItemIds = targetItemIds;
+        if (passwordPopupTargetItemIds.empty()) {
+            for (const size_t idx : GetOperationIndices()) {
+                if (IsValidIndex(idx)) {
+                    passwordPopupTargetItemIds.push_back(items[idx].id);
+                }
             }
         }
         showPasswordPopup = true;
@@ -1079,6 +1262,9 @@ namespace safe::ui
         passwordInputNeedsFocus = false;
         passwordRevealUntil = 0.0;
         passwordRequiredHintUntil = 0.0;
+        if (passwordModeIsLock) {
+            ResetPendingGroupedLockState();
+        }
         statusMessage = passwordModeIsLock ? "Lock cancelled" : "Unlock cancelled";
         ImGui::CloseCurrentPopup();
     }
@@ -1170,7 +1356,9 @@ namespace safe::ui
         ImGui::PopStyleVar();
 
         ImGui::End();
-        
+
+        RenderMultiLockModePopup();
+        RenderArchiveNamePopup();
         RenderPasswordPopup();
     }
 
@@ -1480,6 +1668,146 @@ namespace safe::ui
         }
     }
 
+    static void RenderMultiLockModePopup()
+    {
+        if (!showMultiLockModePopup) {
+            return;
+        }
+
+        constexpr const char* popupTitle = "Lock Multiple Items";
+        if (multiLockModePopupNeedsOpen) {
+            ImGui::OpenPopup(popupTitle);
+            multiLockModePopupNeedsOpen = false;
+        }
+        ImGui::SetNextWindowSize(ImVec2(MULTI_LOCK_POPUP_WIDTH, MULTI_LOCK_POPUP_HEIGHT), ImGuiCond_Appearing);
+        if (const ImGuiViewport* viewport = ImGui::GetMainViewport(); viewport != nullptr) {
+            const ImVec2 centeredPos(
+                viewport->WorkPos.x + (viewport->WorkSize.x * 0.5f),
+                viewport->WorkPos.y + (viewport->WorkSize.y * 0.5f)
+            );
+            ImGui::SetNextWindowPos(centeredPos, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        }
+
+        if (ImGui::BeginPopupModal(popupTitle, &showMultiLockModePopup,
+                                   ImGuiWindowFlags_NoResize |
+                                   ImGuiWindowFlags_NoScrollbar |
+                                   ImGuiWindowFlags_NoScrollWithMouse))
+        {
+            ImGui::Text("Lock %zu selected items", pendingLockTargetItemIds.size());
+            ImGui::Spacing();
+            ImGui::TextWrapped("Choose how to encrypt the selected items.");
+            ImGui::Spacing();
+
+            const float spacing = ImGui::GetStyle().ItemSpacing.x;
+            const float contentWidth = std::max(120.0f, ImGui::GetContentRegionAvail().x);
+            const float buttonWidth = (contentWidth - (spacing * 2.0f)) / 3.0f;
+
+            if (ImGui::Button("Individual", ImVec2(buttonWidth, 0.0f))) {
+                showMultiLockModePopup = false;
+                multiLockModePopupNeedsOpen = false;
+                activeLockOperationMode = LockOperationMode::Individual;
+                OpenPasswordPopup(true, pendingLockTargetItemIds, LockOperationMode::Individual);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine(0.0f, spacing);
+            if (ImGui::Button("Group", ImVec2(buttonWidth, 0.0f))) {
+                showMultiLockModePopup = false;
+                multiLockModePopupNeedsOpen = false;
+                OpenArchiveNamePopup();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine(0.0f, spacing);
+            if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                CloseMultiLockModePopupAsCancelled();
+            }
+
+            ImGui::EndPopup();
+        }
+    }
+
+    static void RenderArchiveNamePopup()
+    {
+        if (!showArchiveNamePopup) {
+            return;
+        }
+
+        constexpr const char* popupTitle = "Grouped Archive Name";
+        if (archiveNamePopupNeedsOpen) {
+            ImGui::OpenPopup(popupTitle);
+            archiveNamePopupNeedsOpen = false;
+        }
+
+        ImGui::SetNextWindowSize(ImVec2(ARCHIVE_NAME_POPUP_WIDTH, ARCHIVE_NAME_POPUP_HEIGHT), ImGuiCond_Appearing);
+        if (const ImGuiViewport* viewport = ImGui::GetMainViewport(); viewport != nullptr) {
+            const ImVec2 centeredPos(
+                viewport->WorkPos.x + (viewport->WorkSize.x * 0.5f),
+                viewport->WorkPos.y + (viewport->WorkSize.y * 0.5f)
+            );
+            ImGui::SetNextWindowPos(centeredPos, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        }
+
+        if (ImGui::BeginPopupModal(popupTitle, &showArchiveNamePopup,
+                                   ImGuiWindowFlags_NoResize |
+                                   ImGuiWindowFlags_NoScrollbar |
+                                   ImGuiWindowFlags_NoScrollWithMouse))
+        {
+            ImGui::TextWrapped("Enter a name for the grouped .safe archive.");
+            ImGui::Spacing();
+            ImGui::SetNextItemWidth(std::max(120.0f, ImGui::GetContentRegionAvail().x));
+            if (archiveNameInputNeedsFocus) {
+                ImGui::SetKeyboardFocusHere();
+                archiveNameInputNeedsFocus = false;
+            }
+            const bool submittedWithEnter = ImGui::InputTextWithHint(
+                "##group-archive-name",
+                "Archive name (without .safe)",
+                archiveNameBuffer,
+                ARCHIVE_NAME_BUFFER_SIZE,
+                ImGuiInputTextFlags_EnterReturnsTrue
+            );
+
+            if (!archiveNamePopupError.empty()) {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.85f, 0.20f, 0.20f, 1.0f), "%s", archiveNamePopupError.c_str());
+            } else {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Result: <name>.safe");
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            const float spacing = ImGui::GetStyle().ItemSpacing.x;
+            const float contentWidth = std::max(120.0f, ImGui::GetContentRegionAvail().x);
+            const float buttonWidth = (contentWidth - spacing) * 0.5f;
+            const bool confirmPressed = ImGui::Button("Next", ImVec2(buttonWidth, 0.0f));
+            if (confirmPressed || submittedWithEnter) {
+                const std::string archiveName(archiveNameBuffer);
+                std::string reason;
+                if (!IsValidGroupedArchiveName(archiveName, reason)) {
+                    archiveNamePopupError = reason;
+                    archiveNameInputNeedsFocus = true;
+                } else {
+                    groupedArchiveName = archiveName;
+                    showArchiveNamePopup = false;
+                    archiveNamePopupNeedsOpen = false;
+                    archiveNamePopupError.clear();
+                    activeLockOperationMode = LockOperationMode::Grouped;
+                    OpenPasswordPopup(true, pendingLockTargetItemIds, LockOperationMode::Grouped);
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+
+            ImGui::SameLine(0.0f, spacing);
+            if (ImGui::Button("Cancel", ImVec2(buttonWidth, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                CloseArchiveNamePopupAsCancelled();
+            }
+
+            ImGui::EndPopup();
+        }
+    }
+
     static void RenderPasswordPopup()
     {
         if (!showPasswordPopup) {
@@ -1532,7 +1860,16 @@ namespace safe::ui
             ImGui::SetCursorPosX(contentStartX);
             ImGui::PushTextWrapPos(contentRightX);
             ImGui::TextUnformatted("Enter password for the selected items.");
-            ImGui::TextColored(ImVec4(0.25f, 0.25f, 0.25f, 1.0f), "%s", passwordModeIsLock ? "Mode: Lock" : "Mode: Unlock");
+            if (!passwordModeIsLock) {
+                ImGui::TextColored(ImVec4(0.25f, 0.25f, 0.25f, 1.0f), "Mode: Unlock");
+            } else if (activeLockOperationMode == LockOperationMode::Grouped) {
+                ImGui::TextColored(ImVec4(0.25f, 0.25f, 0.25f, 1.0f), "Mode: Lock (Group)");
+                if (!groupedArchiveName.empty()) {
+                    ImGui::TextColored(ImVec4(0.25f, 0.25f, 0.25f, 1.0f), "Archive: %s.safe", groupedArchiveName.c_str());
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.25f, 0.25f, 0.25f, 1.0f), "Mode: Lock (Individual)");
+            }
             ImGui::PopTextWrapPos();
             ImGui::Spacing();
             ImGui::SetCursorPosX(contentStartX);
@@ -1624,12 +1961,24 @@ namespace safe::ui
                     }
                     if (const bool ok = passwordModeIsLock ? ApplyLockOperation(password) : ApplyUnlockOperation(password); ok) {
                         passwordPopupError.clear();
-                        statusMessage = passwordModeIsLock ? "Locked selected item(s)" : "Unlocked selected item(s)";
+                        if (!passwordModeIsLock) {
+                            statusMessage = "Unlocked selected item(s)";
+                        } else if (activeLockOperationMode == LockOperationMode::Grouped) {
+                            statusMessage = "Created " + groupedArchiveName + ".safe from " +
+                                            std::to_string(passwordPopupTargetItemIds.size()) + " item(s)";
+                        } else if (passwordPopupTargetItemIds.size() > 1) {
+                            statusMessage = "Encrypted " + std::to_string(passwordPopupTargetItemIds.size()) + " item(s) individually";
+                        } else {
+                            statusMessage = "Locked selected item";
+                        }
                         showPasswordPopup = false;
                         passwordPopupNeedsOpen = false;
                         passwordPopupTargetItemIds.clear();
                         unlockPasswordMismatchMessage.clear();
                         passwordRevealUntil = 0.0;
+                        if (passwordModeIsLock) {
+                            ResetPendingGroupedLockState();
+                        }
                     } else if (!passwordModeIsLock) {
                         passwordBuffer[0] = '\0';
                         passwordPopupError = unlockPasswordMismatchMessage.empty()
@@ -1638,7 +1987,9 @@ namespace safe::ui
                         passwordInputNeedsFocus = true;
                         passwordRevealUntil = 0.0;
                     } else {
-                        passwordPopupError = "Lock failed for one or more items";
+                        passwordPopupError = activeLockOperationMode == LockOperationMode::Grouped
+                            ? "Grouped lock failed. Check archive name and item state."
+                            : "Lock failed for one or more items";
                         passwordRevealUntil = 0.0;
                     }
                 }
@@ -1683,7 +2034,15 @@ namespace safe::ui
             return;
         }
 
-        OpenPasswordPopup(true);
+        const std::vector<std::string> targetItemIds = BuildItemIdsFromIndices(operationIndices);
+        if (targetItemIds.size() >= 2) {
+            OpenMultiLockModePopup(targetItemIds);
+            return;
+        }
+
+        pendingLockTargetItemIds = targetItemIds;
+        activeLockOperationMode = LockOperationMode::Individual;
+        OpenPasswordPopup(true, targetItemIds, LockOperationMode::Individual);
     }
 
     static void PerformUnlockOperation()
@@ -1715,13 +2074,12 @@ namespace safe::ui
         OpenPasswordPopup(false);
     }
 
-    static bool ApplyLockOperation(const std::string& password) {
-        const std::vector<size_t> targetIndices = passwordPopupTargetItemIds.empty()
-            ? GetOperationIndices()
-            : ResolveIndicesForItemIds(passwordPopupTargetItemIds);
+    static bool ApplyIndividualLockOperation(const std::string& password, const std::vector<size_t>& targetIndices) {
         if (targetIndices.empty()) {
             return false;
         }
+
+        statusMessage = "Encrypting " + std::to_string(targetIndices.size()) + " item(s) individually...";
         bool allCoreOpsSucceeded = true;
         bool anyChanged = false;
         for (const size_t idx : targetIndices) {
@@ -1765,6 +2123,49 @@ namespace safe::ui
             LoadItemsFromPath(openedRootPath);
         }
         return allCoreOpsSucceeded;
+    }
+
+    static bool ApplyGroupedLockOperation(const std::string& password, const std::vector<size_t>& targetIndices) {
+        if (targetIndices.size() < 2 || groupedArchiveName.empty() || openedRootPath.empty()) {
+            return false;
+        }
+
+        std::vector<std::wstring> sourcePaths;
+        sourcePaths.reserve(targetIndices.size());
+        for (const size_t idx : targetIndices) {
+            if (!IsValidIndex(idx) || items[idx].isLocked) {
+                return false;
+            }
+            sourcePaths.push_back(items[idx].path);
+        }
+
+        std::string archiveNameReason;
+        if (!IsValidGroupedArchiveName(groupedArchiveName, archiveNameReason)) {
+            passwordPopupError = archiveNameReason;
+            return false;
+        }
+
+        statusMessage = "Encrypting " + std::to_string(targetIndices.size()) +
+                        " item(s) into " + groupedArchiveName + ".safe...";
+        const std::wstring archivePath = core::Filesystem::JoinPath(openedRootPath, Utf8ToWide(groupedArchiveName) + L".safe");
+        if (!core::Folder::CreateGroupedArchive(sourcePaths, archivePath, password)) {
+            return false;
+        }
+
+        if (!openedRootPath.empty()) {
+            (void)LoadItemsFromPath(openedRootPath);
+        }
+        return true;
+    }
+
+    static bool ApplyLockOperation(const std::string& password) {
+        const std::vector<size_t> targetIndices = passwordPopupTargetItemIds.empty()
+            ? GetOperationIndices()
+            : ResolveIndicesForItemIds(passwordPopupTargetItemIds);
+        if (activeLockOperationMode == LockOperationMode::Grouped) {
+            return ApplyGroupedLockOperation(password, targetIndices);
+        }
+        return ApplyIndividualLockOperation(password, targetIndices);
     }
 
     static bool ApplyUnlockOperation(const std::string& password) {

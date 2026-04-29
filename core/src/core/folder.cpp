@@ -5,6 +5,9 @@
 #include <filesystem>
 #include <fstream>
 #include <system_error>
+#include <unordered_set>
+#include <algorithm>
+#include <cwctype>
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -581,6 +584,131 @@ namespace safe::core
 
         m_lockedPath.clear();
         m_status = FolderStatus::Unlocked;
+        return true;
+    }
+
+    bool Folder::CreateGroupedArchive(const std::vector<std::wstring>& sourcePaths,
+                                      const std::wstring& outputArchivePath,
+                                      const std::string& password) {
+        if (sourcePaths.size() < 2 || outputArchivePath.empty() || password.empty()) {
+            return false;
+        }
+
+        std::error_code ec;
+        const std::filesystem::path outputPath(outputArchivePath);
+        if (outputPath.has_parent_path()) {
+            std::filesystem::create_directories(outputPath.parent_path(), ec);
+            if (ec) return false;
+        }
+        if (std::filesystem::exists(outputPath, ec) || ec) {
+            return false;
+        }
+
+        const std::filesystem::path stageRoot = outputPath.parent_path().empty()
+            ? std::filesystem::current_path(ec)
+            : outputPath.parent_path();
+        if (ec || stageRoot.empty()) {
+            return false;
+        }
+
+        std::filesystem::path stageDir;
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            const std::wstring stageName =
+                L".safe_group_stage_" + std::to_wstring(static_cast<unsigned long long>(GetTickCount64())) + L"_" + std::to_wstring(attempt);
+            stageDir = stageRoot / stageName;
+            std::error_code existsError;
+            const bool exists = std::filesystem::exists(stageDir, existsError);
+            if (!existsError && !exists) {
+                break;
+            }
+            stageDir.clear();
+        }
+        if (stageDir.empty()) {
+            return false;
+        }
+
+        std::filesystem::create_directories(stageDir, ec);
+        if (ec) return false;
+
+        struct MoveEntry {
+            std::filesystem::path from;
+            std::filesystem::path to;
+        };
+        std::vector<MoveEntry> movedEntries;
+        movedEntries.reserve(sourcePaths.size());
+
+        auto rollbackMoves = [&]() {
+            for (auto it = movedEntries.rbegin(); it != movedEntries.rend(); ++it) {
+                std::error_code rollbackError;
+                if (std::filesystem::exists(it->to, rollbackError) && !rollbackError) {
+                    std::filesystem::rename(it->to, it->from, rollbackError);
+                }
+            }
+            std::error_code cleanupError;
+            std::filesystem::remove_all(stageDir, cleanupError);
+        };
+
+        std::unordered_set<std::wstring> stagedNames;
+        for (const std::wstring& sourcePath : sourcePaths) {
+            const std::filesystem::path source(sourcePath);
+            if (source.empty()) {
+                rollbackMoves();
+                return false;
+            }
+            const std::filesystem::path name = source.filename();
+            if (name.empty()) {
+                rollbackMoves();
+                return false;
+            }
+
+            std::wstring dedupeName = name.wstring();
+            std::ranges::transform(dedupeName, dedupeName.begin(), [](wchar_t c) {
+                return static_cast<wchar_t>(std::towlower(c));
+            });
+            if (stagedNames.contains(dedupeName)) {
+                rollbackMoves();
+                return false;
+            }
+            stagedNames.insert(std::move(dedupeName));
+
+            std::error_code stateError;
+            const bool exists = std::filesystem::exists(source, stateError);
+            if (stateError || !exists) {
+                rollbackMoves();
+                return false;
+            }
+
+            const std::filesystem::path stagedPath = stageDir / name;
+            if (std::filesystem::exists(stagedPath, stateError) || stateError) {
+                rollbackMoves();
+                return false;
+            }
+
+            std::error_code moveError;
+            std::filesystem::rename(source, stagedPath, moveError);
+            if (moveError) {
+                rollbackMoves();
+                return false;
+            }
+            movedEntries.push_back({source, stagedPath});
+        }
+
+        Folder stagedFolder(stageDir.wstring());
+        if (!stagedFolder.Lock(password)) {
+            rollbackMoves();
+            return false;
+        }
+
+        const std::filesystem::path stagedArchive = std::filesystem::path(stageDir.wstring() + L".safe");
+        if (!std::filesystem::exists(stagedArchive, ec) || ec) {
+            return false;
+        }
+
+        std::filesystem::rename(stagedArchive, outputPath, ec);
+        if (ec) {
+            return false;
+        }
+
         return true;
     }
 
