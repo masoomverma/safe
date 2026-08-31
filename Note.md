@@ -6,7 +6,7 @@ Safe is a Windows desktop app for locking and unlocking files/folders into encry
 
 ## Current state
 
-- Current app version: `1.1.2`
+- Current app version: `1.1.3`
 - Main workflow is implemented: open folder, browse/search, lock, unlock, and persist state.
 
 ## Implemented capabilities

@@ -10,6 +10,7 @@
 #include <shobjidl.h>
 #include <objbase.h>
 #include <bcrypt.h>
+#include <cstring>
 
 // Avoid Windows API macro collisions with core::Filesystem methods.
 #ifdef CreateDirectory
@@ -539,11 +540,12 @@ namespace safe::ui
         using SetThreadDpiAwarenessContextFn = DPI_AWARENESS_CONTEXT(WINAPI*)(DPI_AWARENESS_CONTEXT);
         DPI_AWARENESS_CONTEXT previousDpiContext = nullptr;
         HMODULE user32 = GetModuleHandleW(L"user32.dll");
-        const auto setThreadDpiAwarenessContext = user32 == nullptr
-            ? nullptr
-            : reinterpret_cast<SetThreadDpiAwarenessContextFn>(
-                GetProcAddress(user32, "SetThreadDpiAwarenessContext")
-            );
+        SetThreadDpiAwarenessContextFn setThreadDpiAwarenessContext = nullptr;
+        if (user32 != nullptr) {
+            FARPROC dpiProc = GetProcAddress(user32, "SetThreadDpiAwarenessContext");
+            static_assert(sizeof(setThreadDpiAwarenessContext) == sizeof(dpiProc));
+            std::memcpy(&setThreadDpiAwarenessContext, &dpiProc, sizeof(setThreadDpiAwarenessContext));
+        }
         if (setThreadDpiAwarenessContext != nullptr) {
             previousDpiContext = setThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }

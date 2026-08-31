@@ -23,6 +23,7 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "core/filesystem.hpp"
@@ -100,9 +101,10 @@ static void EnablePerMonitorV2DpiAwareness()
     if (user32 != nullptr)
     {
         using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
-        const auto setProcessDpiAwarenessContext = reinterpret_cast<SetProcessDpiAwarenessContextFn>(
-            GetProcAddress(user32, "SetProcessDpiAwarenessContext")
-        );
+        SetProcessDpiAwarenessContextFn setProcessDpiAwarenessContext = nullptr;
+        FARPROC processDpiProc = GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        static_assert(sizeof(setProcessDpiAwarenessContext) == sizeof(processDpiProc));
+        std::memcpy(&setProcessDpiAwarenessContext, &processDpiProc, sizeof(setProcessDpiAwarenessContext));
         if (setProcessDpiAwarenessContext != nullptr)
         {
             if (setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
@@ -114,9 +116,10 @@ static void EnablePerMonitorV2DpiAwareness()
         }
 
         using SetProcessDPIAwareFn = BOOL(WINAPI*)();
-        const auto setProcessDPIAware = reinterpret_cast<SetProcessDPIAwareFn>(
-            GetProcAddress(user32, "SetProcessDPIAware")
-        );
+        SetProcessDPIAwareFn setProcessDPIAware = nullptr;
+        FARPROC dpiAwareProc = GetProcAddress(user32, "SetProcessDPIAware");
+        static_assert(sizeof(setProcessDPIAware) == sizeof(dpiAwareProc));
+        std::memcpy(&setProcessDPIAware, &dpiAwareProc, sizeof(setProcessDPIAware));
         if (setProcessDPIAware != nullptr)
         {
             setProcessDPIAware();

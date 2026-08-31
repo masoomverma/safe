@@ -41,7 +41,7 @@ bool Filesystem::DeleteFile(const std::wstring& path) {
 }
 
     std::vector<uint8_t> Filesystem::ReadFile(const std::wstring& path) {
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        std::ifstream file(std::filesystem::path(path), std::ios:: binary | std::ios::ate);
         if (!file.is_open()) return {};
 
         auto size = file.tellg();
@@ -54,7 +54,7 @@ bool Filesystem::DeleteFile(const std::wstring& path) {
     }
 
     bool Filesystem::WriteFile(const std::wstring& path, const std::vector<uint8_t>& data) {
-        std::ofstream file(path, std::ios::binary);
+        std::ofstream file(std::filesystem::path(path), std::ios::binary);
         if (!file.is_open()) return false;
 
         if (data.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {

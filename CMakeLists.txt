@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Safe VERSION 1.1.2 LANGUAGES C CXX)
+project(Safe VERSION 1.1.3 LANGUAGES C CXX)
 
 # ── Language standard ────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
@@ -54,6 +54,13 @@ add_executable(Safe WIN32
 
 # Mark SQLite as C source (not C++)
 set_source_files_properties(${SQLITE_SOURCES} PROPERTIES LANGUAGE C)
+# SQLite is a bundled third-party amalgamation. Its generated code triggers
+# compiler diagnostics under newer GCC versions; keep the project warnings
+# enabled while suppressing only these diagnostics for SQLite itself.
+if(NOT MSVC)
+    set_source_files_properties(${SQLITE_SOURCES} PROPERTIES COMPILE_OPTIONS
+        "-Wno-unused-but-set-variable;-Wno-unused-parameter;-Wno-stringop-overread")
+endif()
 
 # ── Include paths ────────────────────────────────────────────────────────────
 # CMAKE_SOURCE_DIR (workspace root) is added so that

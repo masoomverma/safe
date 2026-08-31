@@ -51,6 +51,7 @@ data/metadata/
 
 # Optional: Ignore build asset copies
 build/assets/
+.build
 
 # Docs
 docs/

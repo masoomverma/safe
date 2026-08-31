@@ -361,7 +361,11 @@ namespace safe::core
             if (!EncryptAesCbc(key, iv, archive, ciphertext)) return false;
 
             container.clear();
-            container.insert(container.end(), {'S', 'A', 'F', 'E', 'E', 'N', 'C', '1'});
+            // Reserve the fixed header before inserting it. This also avoids a
+            // false-positive -Wstringop-overflow diagnostic in GCC 15.
+            container.reserve(8);
+            constexpr std::uint8_t containerMagic[] = {'S', 'A', 'F', 'E', 'E', 'N', 'C', '1'};
+            container.insert(container.end(), containerMagic, containerMagic + sizeof(containerMagic));
             WriteU32(container, 2u);
             container.push_back(sourceKind);
             container.insert(container.end(), salt.begin(), salt.end());
