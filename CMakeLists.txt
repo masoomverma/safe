@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
-project(Safe VERSION 1.1.3 LANGUAGES C CXX)
+
+# Keep MSVC-built releases independent of a separately installed VC runtime.
+# This affects only CRT linkage; it does not change the executable architecture.
+cmake_policy(SET CMP0091 NEW)
+project(Safe VERSION 1.1.4 LANGUAGES C CXX)
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 # ── Language standard ────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
@@ -137,6 +144,35 @@ if(EXISTS "${OPENSSL_DLL_DIR}")
                 "${DLL}"
                 "$<TARGET_FILE_DIR:Safe>"
             COMMENT "Copying ${DLL} to output directory"
+        )
+    endforeach()
+endif()
+
+# GCC's Windows runtime DLLs are not reported by TARGET_RUNTIME_DLLS because
+# they are implicit compiler dependencies rather than imported CMake targets.
+# Resolve them through the active compiler (works with MinGW cross toolchains
+# too) and stage only the runtime DLLs used by this GNU build.
+if(MINGW)
+    foreach(RUNTIME_DLL IN ITEMS
+            libgcc_s_seh-1.dll
+            libstdc++-6.dll
+            libwinpthread-1.dll)
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" "-print-file-name=${RUNTIME_DLL}"
+            OUTPUT_VARIABLE RUNTIME_DLL_PATH
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE RUNTIME_LOOKUP_RESULT
+        )
+        if(NOT RUNTIME_LOOKUP_RESULT EQUAL 0 OR
+           RUNTIME_DLL_PATH STREQUAL RUNTIME_DLL OR
+           NOT EXISTS "${RUNTIME_DLL_PATH}")
+            message(FATAL_ERROR "Could not locate ${RUNTIME_DLL} using ${CMAKE_CXX_COMPILER}")
+        endif()
+        add_custom_command(TARGET Safe POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${RUNTIME_DLL_PATH}" "$<TARGET_FILE_DIR:Safe>/${RUNTIME_DLL}"
+            COMMENT "Staging MinGW runtime ${RUNTIME_DLL}"
+            VERBATIM
         )
     endforeach()
 endif()

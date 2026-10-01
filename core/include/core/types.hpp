@@ -31,7 +31,7 @@ namespace safe::core
         [[nodiscard]] std::string ToString() const;
     };
 
-    constexpr Version APP_VERSION = { 1, 1, 2 };
+    constexpr Version APP_VERSION = { 1, 1, 4 };
 
 } // namespace safe::core
 

@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.1.3"
+  #define AppVersion "1.1.4"
 #endif
 
 #ifndef SourceDir
@@ -34,6 +34,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#SourceDir}\Safe.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Keep the runtime and OpenSSL DLLs beside Safe.exe. These explicit entries
+; prevent build-tree contents or unrelated DLLs from entering the installer.
+Source: "{#SourceDir}\libgcc_s_seh-1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\libstdc++-6.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\libwinpthread-1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SourceDir}\libcrypto-3-x64.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\libssl-3-x64.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\fonts\Inter_24pt-Regular.ttf"; DestDir: "{app}\assets\fonts"; DestName: "Inter-Regular.ttf"; Flags: ignoreversion
 
 [Tasks]
